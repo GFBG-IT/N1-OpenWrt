@@ -91,7 +91,7 @@ jobs:
         make -j$(( $(nproc) + 1 )) || make -j1 V=s
 
     - name: Package N1 firmware
-      uses: unifreq/openwrt_packit@masterF
+      uses: unifreq/openwrt_packit@master
       env:
         OPENWRT_ARMVIRT: openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz
         KERNEL_REPO_URL: breakingbadboy/OpenWrt
