@@ -1,4 +1,4 @@
-name: Build ImmortalWrt-24.10.5 for armsr_armv8
+name: Build ImmortalWrt-24.10 for armsr_armv8
 
 on:
   workflow_dispatch:
