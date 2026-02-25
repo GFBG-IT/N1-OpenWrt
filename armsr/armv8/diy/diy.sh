@@ -9,7 +9,8 @@ git clone https://github.com/sbwml/autocore-arm --depth=1 --branch openwrt-24.10
 
 # Adjust packages
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
-cp -rf clone/autocore-arm feeds/luci/applications/autocore-arm
+cp -rf clone/autocore-arm feeds/luci/applications/autocore
+
 sed -i '/luci-app-attendedsysupgrade/d' feeds/luci/collections/luci/Makefile
 
 # Clean packages
