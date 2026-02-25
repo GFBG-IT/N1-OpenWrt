@@ -118,5 +118,5 @@ jobs:
     - name: Delete old releases
       uses: dev-drprasad/delete-older-releases@master
       with:
-        keep_latest: 2
+        keep_latest: 10
         delete_tags : true
