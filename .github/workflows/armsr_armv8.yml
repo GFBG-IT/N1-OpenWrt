@@ -17,9 +17,7 @@ on:
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # 确认标签名：如果是 v24.10.5 则保留 v，如果是 24.10.5 则去掉 v
-  # 请确保这个 Tag 在 immortalwrt 仓库中真实存在
-  REPO_TAG: v24.10.5 
+  REPO_BRANCH: openwrt-24.10
   TZ: Asia/Shanghai
 
 jobs:
@@ -56,16 +54,9 @@ jobs:
     - name: Clone source code
       working-directory: /workdir
       run: |
-        # 【已修复】这里改为了 $REPO_TAG，之前是 $REPO_BRANCH (错误)
-        git clone $REPO_URL -b $REPO_TAG --single-branch --depth=1 openwrt
-        
-        # 验证是否检出成功
-        cd openwrt
-        echo "Current Version: $(cat VERSION_DIST) $(cat VERSION_NUMBER)"
-        
+        git clone $REPO_URL -b $REPO_BRANCH --single-branch --depth=1 openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
         echo "FILE_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
-        echo "BUILD_TAG=$REPO_TAG" >> $GITHUB_ENV
 
     - name: Update & Install feeds
       run: |
@@ -104,9 +95,7 @@ jobs:
       env:
         OPENWRT_ARMVIRT: openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz
         KERNEL_REPO_URL: breakingbadboy/OpenWrt
-        # 【重要建议】24.10 版本推荐搭配 5.15 内核，6.6 可能不兼容导致打包失败
-        # 如果你确定有适配 24.10 的 6.6 内核，可以改回 6.6.y，否则请用 5.15.y
-        KERNEL_VERSION_NAME: 6.6.y 
+        KERNEL_VERSION_NAME: 6.6.y
         PACKAGE_SOC: diy
         GZIP_IMGS: .xz
         SCRIPT_DIY_PATH: armsr/armv8/N1/mk_s905d_n1.sh
@@ -120,8 +109,6 @@ jobs:
         tag_name: OpenWrt_${{ env.FILE_DATE }}
         files: ${{ env.PACKAGED_OUTPUTPATH }}/*.img.xz
         body: |
-          基于 ImmortalWrt ${{ env.BUILD_TAG }}
-          内核版本：6.6.120
           首次使用建议全新刷写
           * 基本信息
           IP: 192.168.5.3
