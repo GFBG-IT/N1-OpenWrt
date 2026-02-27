@@ -94,8 +94,7 @@ FIRMWARE_TXZ="${PWD}/files/firmware_armbian.tar.xz"
 BOOTFILES_HOME="${PWD}/files/bootfiles/amlogic"
 GET_RANDOM_MAC="${PWD}/files/get_random_mac.sh"
 
-# 20210618 add
-DOCKER_README="${PWD}/files/DockerReadme.pdf"
+
 
 # 20210704 add
 SYSINFO_SCRIPT="${PWD}/files/30-sysinfo.sh"
@@ -167,7 +166,7 @@ echo "修改根文件系统相关配置 ... "
 cd $TGT_ROOT
 copy_supplement_files
 extract_glibc_programs
-adjust_docker_config
+
 adjust_openssl_config
 adjust_getty_config
 adjust_samba_config
