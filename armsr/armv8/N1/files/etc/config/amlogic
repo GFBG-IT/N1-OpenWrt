@@ -1,6 +1,6 @@
 config amlogic 'config'
 	option enable '1'
-	option amlogic_firmware_repo 'https://github.com/ophub/kernel'
+	option amlogic_firmware_repo 'https://github.com/GFBG-IT/N1-OpenWrt'
 	option amlogic_firmware_tag 'ARMv8'
 	option amlogic_firmware_suffix '.img.xz'
 	option amlogic_kernel_path 'https://github.com/ophub/kernel'
