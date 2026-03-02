@@ -11,7 +11,3 @@ config interface 'lan'
 	option ipaddr '192.168.5.3'
 	option gateway '192.168.5.1'
 	option delegate '0'
-
-config globals 'globals'
-	option packet_steering '2'
-	option steering_flows '256'
