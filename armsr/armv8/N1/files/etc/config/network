@@ -1,3 +1,4 @@
+
 config interface 'loopback'
 	option device 'lo'
 	option proto 'static'
@@ -11,3 +12,17 @@ config interface 'lan'
 	option ipaddr '192.168.5.3'
 	option gateway '192.168.5.1'
 	option delegate '0'
+	list ip6addr 'fe80::a1b2:c3d4:e5f7'
+	option ip6gw 'fe80::a1b2:c3d4:e5f6'
+	list dns '192.168.5.1'
+	list dns 'fe80::a1b2:c3d4:e5f6'
+
+config device
+	option name 'eth0'
+	option mtu '1480'
+	option mtu6 '1480'
+	option dadtransmits '0'
+
+config globals 'globals'
+	option packet_steering '0'
+	option ula_prefix 'fdb4:d3dc:ec5b::/48'
