@@ -42,7 +42,6 @@ TGT_IMG="${WORK_DIR}/openwrt_${SOC}_${BOARD}_${OPENWRT_VER}_k${KERNEL_VERSION}${
 ###########################################################################
 KMOD="${PWD}/files/kmod"
 KMOD_BLACKLIST="${PWD}/files/kmod_blacklist"
-MAC_SCRIPT1="${PWD}/files/fix_wifi_macaddr.sh"
 MAC_SCRIPT2="${PWD}/files/find_macaddr.pl"
 MAC_SCRIPT3="${PWD}/files/inc_macaddr.pl"
 CPUSTAT_SCRIPT="${PWD}/files/cpustat"
@@ -86,9 +85,6 @@ UBOOT_WITH_FIP="${FIP_HOME}/n1-u-boot.bin.sd.bin"
 UBOOT_WITHOUT_FIP_HOME="${PWD}/files/meson_btld/without_fip"
 UBOOT_WITHOUT_FIP="u-boot-n1.bin"
 
-# 20210208 add
-WIRELESS_CONFIG="${PWD}/files/s905d/wireless"
-
 # 20210307 add
 SS_LIB="${PWD}/files/ss-glibc/lib-glibc.tar.xz"
 SS_BIN="${PWD}/files/ss-glibc/armv8a_crypto/ss-bin-glibc.tar.xz"
@@ -101,8 +97,6 @@ DOCKERD_PATCH="${PWD}/files/dockerd.patch"
 FIRMWARE_TXZ="${PWD}/files/firmware_armbian.tar.xz"
 BOOTFILES_HOME="${PWD}/files/bootfiles/amlogic"
 GET_RANDOM_MAC="${PWD}/files/get_random_mac.sh"
-
-
 
 # 20210704 add
 SYSINFO_SCRIPT="${PWD}/files/30-sysinfo.sh"
@@ -182,8 +176,6 @@ adjust_openssh_config
 use_xrayplug_replace_v2rayplug
 create_fstab_config
 adjust_turboacc_config
-adjust_ntfs_config
-adjust_mosdns_config
 patch_admin_status_index_html
 adjust_kernel_env
 copy_uboot_to_fs
