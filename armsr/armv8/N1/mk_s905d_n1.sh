@@ -57,9 +57,6 @@ FMW_HOME="${PWD}/files/firmware"
 SMB4_PATCH="${PWD}/files/smb4.11_enable_smb1.patch"
 SYSCTL_CUSTOM_CONF="${PWD}/files/99-custom.conf"
 
-# 20200709 add
-COREMARK="${PWD}/files/coremark.sh"
-
 # 20200930 add
 SND_MOD="${PWD}/files/s905d/snd-meson-gx"
 DAEMON_JSON="${PWD}/files/s905d/daemon.json"
