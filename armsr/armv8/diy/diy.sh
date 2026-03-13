@@ -31,6 +31,7 @@ rm -rf feeds/luci/applications/luci-app-passwall2
 cp -rf clone/passwall2/luci-app-passwall2 feeds/luci/applications/
 
 rm -rf feeds/luci/applications/luci-app-mosdns
+cp -rf clone/mosdns/v2dat feeds/packages/utils/v2dat
 cp -rf clone/mosdns/luci-app-mosdns feeds/luci/applications/
 
 rm -rf feeds/luci/applications/luci-app-ddnstox
@@ -43,6 +44,7 @@ rm -rf feeds/luci/applications/luci-app-bandix
 cp -rf clone/luci-bandix/luci-app-bandix feeds/luci/applications/
 
 rm -rf feeds/luci/applications/luci-app-openlist2
+cp -rf clone/openlist2/openlist2 feeds/packages/net/openlist2
 cp -rf clone/openlist2/luci-app-openlist2 feeds/luci/applications/
 
 # PassWall2 dependencies 
