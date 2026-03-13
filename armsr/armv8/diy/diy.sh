@@ -70,18 +70,5 @@ cp -rf clone/core-bandix feeds/packages/net/openwrt-bandix
 # Remove conflicting package
 sed -i '/luci-app-attendedsysupgrade/d' feeds/luci/collections/luci/Makefile
 
-# === FIX mjpg-streamer DEPENDENCY (NO CLONE) ===
-mkdir -p feeds/packages/multimedia/mjpg-streamer
-curl -sL https://raw.githubusercontent.com/openwrt/packages/master/multimedia/mjpg-streamer/Makefile > feeds/packages/multimedia/mjpg-streamer/Makefile
-
-# === FIX python3-pysocks DEPENDENCY (NO CLONE) ===
-mkdir -p feeds/packages/lang/python3/python3-pysocks
-curl -sL https://raw.githubusercontent.com/openwrt/packages/master/lang/python3/python3-pysocks/Makefile > feeds/packages/lang/python3/python3-pysocks/Makefile
-
-# === FIX python3-unidecode DEPENDENCY (NO CLONE) ===
-mkdir -p feeds/packages/lang/python3/python3-unidecode
-curl -sL https://raw.githubusercontent.com/openwrt/packages/master/lang/python3/python3-unidecode/Makefile > feeds/packages/lang/python3/python3-unidecode/Makefile
-
-
 # Clean temporary clones
 rm -rf clone
