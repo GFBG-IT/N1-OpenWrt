@@ -101,7 +101,7 @@ jobs:
         GZIP_IMGS: .xz
         SCRIPT_DIY_PATH: armsr/armv8/N1/mk_s905d_n1.sh
         WHOAMI: Anonymous
-        OPENWRT_VER: auto
+        OPENWRT_VER: R26.03.16
         SW_FLOWOFFLOAD: 0
         SFE_FLOW: 0
 
