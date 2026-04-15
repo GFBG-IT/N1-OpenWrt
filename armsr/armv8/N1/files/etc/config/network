@@ -18,8 +18,8 @@ config interface 'lan'
 
 config device
 	option name 'eth0'
-	option mtu '1480'
-	option mtu6 '1480'
+	option mtu '1500'
+	option mtu6 '1500'
 	option dadtransmits '0'
 
 config globals 'globals'
