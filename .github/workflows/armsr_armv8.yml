@@ -113,7 +113,7 @@ jobs:
           密码: password
 
     - name: Delete old releases
-      uses: uses: mgz0227/delete-older-releases@master
+      uses: mgz0227/delete-older-releases@master
       with:
         keep_latest: 3
         delete_tags : true
