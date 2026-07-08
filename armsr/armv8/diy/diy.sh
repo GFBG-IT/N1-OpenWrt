@@ -76,6 +76,9 @@ for pkg in clone/passwall-packages/*/; do
 done
 cp -rf clone/passwall-luci/luci-app-passwall feeds/luci/applications/
 
+# Fix shadowsocks-rust missing OpenSSL dependency for cross-compilation
+sed -i '/Package\/shadowsocks-rust\/Default/,/endef/{s/DEPENDS:=\$$(RUST_ARCH_DEPENDS)/DEPENDS:=+$$(RUST_ARCH_DEPENDS) +libopenssl/}' feeds/packages/net/shadowsocks-rust/Makefile
+
 # ddnstox
 cp -rf clone/ddnstox/ddnstox feeds/packages/net/
 cp -rf clone/ddnstox/luci-app-ddnstox feeds/luci/applications/
