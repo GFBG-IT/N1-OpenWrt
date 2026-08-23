@@ -9,7 +9,7 @@ rm -rf feeds/luci/applications/luci-app-daed
 rm -rf feeds/luci/themes/luci-theme-argon
 
 # Clone packages
-git clone --depth=1 -b 26.x https://github.com/sbwml/packages_lang_golang feeds/packages/lang/golang
+git clone --depth=1 -b 27.x https://github.com/sbwml/packages_lang_golang feeds/packages/lang/golang
 git clone --depth=1 --branch openwrt-25.12 https://github.com/sbwml/autocore-arm clone/autocore-arm
 git clone --depth=1 https://github.com/ophub/luci-app-amlogic clone/amlogic
 git clone --depth=1 https://github.com/QiuSimons/luci-app-daed clone/daed
