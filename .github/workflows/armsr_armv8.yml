@@ -1,11 +1,27 @@
 name: Build ImmortalWrt-25.12 for armsr_armv8
 
 on:
+  # 手动触发：可以填 fw_version 临时指定版本号，留空则用下面 env.FW_VERSION 的默认值
   workflow_dispatch:
+    inputs:
+      fw_version:
+        description: "固件版本号（留空则使用 env.FW_VERSION 的默认值）"
+        required: false
+        default: ""
+  # 定时触发：每月 1 号和 16 号 00:00（北京时间）
   schedule:
     - cron: "0 0 1,16 * *"
 
 env:
+  # ===========================================================================
+  # 固件版本号：全仓库唯一的默认值定义处，改这一行即可换默认版本
+  #   手动触发 -> 取输入框 fw_version；留空 -> 用后面的 '25.12.6'
+  #   定时触发 -> 没有输入框，直接使用后面的 '25.12.6'
+  # 显示效果：ImmortalWrt 25.12.6 r0-214e26e / LuCI openwrt-25.12 branch ...
+  # 这里只决定“显示用的版本号”；源码里的 VERSION_REPO 是 apk/opkg 软件源地址，不要动它
+  # ===========================================================================
+  FW_VERSION: ${{ github.event.inputs.fw_version || '25.12.6' }}
+
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-25.12
@@ -31,6 +47,13 @@ jobs:
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
+    # rust 工具链编译很占磁盘（约 8~10GB），先清掉 runner 上用不到的大目录
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                    /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+        df -h /
+
     - name: Clone source code
       working-directory: /workdir
       run: |
@@ -38,12 +61,13 @@ jobs:
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
         echo "FILE_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-    - name: Update & Install feeds
+    - name: Prepare & Install feeds
       working-directory: ./openwrt
       run: |
-        ./scripts/feeds update -a
+        # diy.sh 内部按顺序执行：写版本号 → 登记额外 feed → feeds update -a
+        #                        → 删重名包/换 golang、rust → feeds update -i
         bash $GITHUB_WORKSPACE/armsr/armv8/diy/diy.sh
-        ./scripts/feeds update -a
+        # 安装所有 feed 包
         ./scripts/feeds install -a
 
     - name: Load N1 custom config
@@ -56,12 +80,54 @@ jobs:
       working-directory: ./openwrt
       run: |
         make defconfig
+        # 确认自定义编译参数生效（没开 CONFIG_TARGET_OPTIONS 的话，这里会显示默认的 -Os -pipe -mcpu=generic）
+        grep -E '^CONFIG_(TARGET_OPTIONS|TARGET_OPTIMIZATION)=' .config
         make download -j$(( $(nproc) * 2 ))
 
     - name: Compile N1 firmware
       working-directory: ./openwrt
       run: |
         make -j$(( $(nproc) + 1 )) || make -j1 V=s
+
+    # 编译完先自检：版本号是否正确、运行时调优文件是否真的打进了镜像。
+    # 任何一项不对就立即失败，避免把有问题的固件打包发出去。
+    - name: Verify firmware version and tuning files
+      run: |
+        rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz | head -n1)"
+        member="$(tar -tzf "$rootfs" | grep -E '(^|/)etc/openwrt_release$' | head -n1)"
+
+        echo "读取 ${rootfs} 中的 ${member}:"
+        tar -xOzf "$rootfs" "$member" | tee /tmp/openwrt_release
+
+        if grep -q "DISTRIB_RELEASE='${FW_VERSION}'" /tmp/openwrt_release; then
+          echo "OK: 固件版本号已生效 -> ${FW_VERSION}"
+        else
+          echo "FAIL: 期望版本号 ${FW_VERSION} 未生效，请检查 diy.sh 的输出"
+          exit 1
+        fi
+
+        for f in etc/sysctl.d/20-network-tuning.conf etc/uci-defaults/99-firewall-flow-offload; do
+          tar -tzf "$rootfs" | grep -qE "(^|/)${f}$" || {
+            echo "FAIL: rootfs 里找不到 ${f}，检查 armsr/armv8/N1/files/ 目录结构"
+            exit 1
+          }
+          echo "OK: ${f} 已打进镜像"
+        done
+
+        # 新增组件自检：任何一个没进镜像就直接失败，避免“配置了但没装”的情况
+        for f in \
+          usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
+          usr/bin/xray usr/bin/sing-box usr/bin/sslocal \
+          usr/bin/tcping usr/bin/geoview usr/bin/chinadns-ng usr/bin/geo2txt \
+          usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
+          etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
+          etc/init.d/passwall2; do
+          tar -tzf "$rootfs" | grep -qE "(^|/)${f}$" || {
+            echo "FAIL: rootfs 里找不到 ${f}，检查 .config 中的组件选择和 diy.sh 的 feeds 处理"
+            exit 1
+          }
+        done
+        echo "OK: mosdns / passwall2 / openlist2 / ddnstox 及其核心组件均已打进镜像"
 
     - name: Package N1 firmware
       uses: ophub/amlogic-s9xxx-openwrt@main
@@ -79,6 +145,7 @@ jobs:
         tag_name: OpenWrt_${{ env.FILE_DATE }}
         files: ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
         body: |
+          固件版本: ImmortalWrt ${{ env.FW_VERSION }}
           首次使用建议全新刷写
           * 基本信息
           IP: 192.168.5.3
