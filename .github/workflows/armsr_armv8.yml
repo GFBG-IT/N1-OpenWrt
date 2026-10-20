@@ -40,12 +40,7 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo -E apt-get -qq update > /dev/null
-        # OpenWrt 编译依赖 + Rust 工具链宿主依赖
-        #   Rust 部分（原远程清单没有）：
-        #     libclang-dev                      crate 启用 bindgen（如 rocksdb）时需要
-        #     libffi-dev libxml2-dev libedit-dev libzstd-dev
-        #                                       本地编译 LLVM（RUST_DOWNLOAD_CI_LLVM=0）时需要
-        #     perl                              部分 crate 的汇编生成步骤需要
+        # OpenWrt 编译依赖（不再需要 Rust：已不编译 shadowsocks-rust）
         sudo -E apt-get -qq install -y \
           ack antlr3 asciidoc autoconf automake autopoint \
           binutils bison build-essential bzip2 \
@@ -63,8 +58,7 @@ jobs:
           qemu-utils re2c rsync scons squashfs-tools \
           subversion swig texinfo uglifyjs upx-ucl \
           unzip vim wget xmlto xxd zlib1g-dev zstd \
-          nodejs cssmin rustc cargo \
-          libclang-dev libffi-dev libxml2-dev libedit-dev libzstd-dev perl \
+          nodejs cssmin \
           > /dev/null
         sudo -E apt-get -qq autoremove --purge > /dev/null
         sudo -E apt-get -qq clean > /dev/null
@@ -72,7 +66,7 @@ jobs:
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    # rust 工具链编译很占磁盘（约 8~10GB），先清掉 runner 上用不到的大目录
+    # 清理 runner 上用不到的大目录，给编译留出磁盘空间
     - name: Free disk space
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -89,8 +83,8 @@ jobs:
     - name: Prepare & Install feeds
       working-directory: ./openwrt
       run: |
-        # diy.sh 内部按顺序执行：写版本号 → 登记额外 feed → feeds update -a
-        #                        → 删重名包/换 golang、rust → feeds update -i
+        # diy.sh 内部按顺序执行：写版本号 → feeds update -a → 删重名包
+        #                        → 引入组件（package/ 等）→ feeds update -i
         bash $GITHUB_WORKSPACE/armsr/armv8/diy/diy.sh
         # 安装所有 feed 包
         ./scripts/feeds install -a
@@ -142,7 +136,7 @@ jobs:
         # 新增组件自检：任何一个没进镜像就直接失败，避免“配置了但没装”的情况
         for f in \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
-          usr/bin/xray usr/bin/sing-box usr/bin/sslocal \
+          usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/chinadns-ng usr/bin/geo2txt \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
