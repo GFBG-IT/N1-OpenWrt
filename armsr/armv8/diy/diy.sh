@@ -8,7 +8,7 @@
 #
 # 执行顺序：
 #   1) 写入固件版本号
-#   2) 登记额外 feed（mosdns / openlist2 / ddnstox / passwall2 / passwall 核心包 / geo 数据）
+#   2) 登记额外 feed（mosdns / openlist2 / ddnstox / passwall2 / passwall 核心包）
 #   3) 更新 feeds
 #   4) 调整 feeds 内容：删除重名旧包、替换 golang/rust、替换 autocore 等
 #   5) 重建 feed 索引（让第 4 步的删除和替换生效）
@@ -82,8 +82,12 @@ grep -n '^VERSION_NUMBER:=' include/version.mk
 #   ddnstox           luci-app-ddnstox / ddnstox
 #   passwall2         luci-app-passwall2
 #   passwall_packages xray-core / sing-box / shadowsocks-rust / tcping /
-#                     geoview / chinadns-ng 等 passwall2 核心组件
-#   v2ray_geodata     v2ray-geoip / v2ray-geosite（mosdns 与 passwall2 共用这一份）
+#                     geoview / chinadns-ng 等 passwall2 核心组件，
+#                     以及 v2ray-geoip / v2ray-geosite（geo 数据）
+#
+# geo 数据统一用 passwall_packages 提供的 v2ray-geodata：
+# mosdns 和 passwall2 依赖的是同一个 v2ray-geoip / v2ray-geosite 包，
+# 第 4 步只删掉 feeds/packages 里的同名旧版本，保留 passwall 这份。
 FEEDS_CONF="feeds.conf.default"
 
 add_feed() {
@@ -104,12 +108,11 @@ add_feed openlist2         "https://github.com/sbwml/luci-app-openlist2.git;main
 add_feed ddnstox           "https://github.com/linkease/ddnstox-openwrt-package.git;master"
 add_feed passwall2         "https://github.com/Openwrt-Passwall/openwrt-passwall2.git;main"
 add_feed passwall_packages "https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main"
-add_feed v2ray_geodata     "https://github.com/sbwml/v2ray-geodata.git;master"
 
 # ----------------------------------------------------------------------------
 # 3/6 更新 feeds
 # ----------------------------------------------------------------------------
-log "更新 feeds（首次会克隆上面 6 个源）"
+log "更新 feeds（首次会克隆上面 5 个源）"
 ./scripts/feeds update -a
 
 # ----------------------------------------------------------------------------
@@ -119,15 +122,39 @@ log "更新 feeds（首次会克隆上面 6 个源）"
 # feeds/packages 自带 mosdns / xray-core / sing-box / shadowsocks-rust / tcping /
 # geoview / chinadns-ng / v2ray-geodata。feeds install 会优先使用排在前面的 feed，
 # 所以先删掉这些旧包，第 5 步重建索引后它们才不会再被安装。
+# shadowsocks-rust 反过来处理：保留 feeds/packages 自带的 1.24.0，删掉 passwall 的
+# 1.25.0。因为 1.25.0 的加密后端换成了 aws-lc-rs，交叉编译到 aarch64 musl 时
+# 链接会报 aws_lc_0_44_0_* 未定义符号；1.24.0 用的是 ring 后端，可以正常编过。
 log "删除 feeds 里的同名旧包"
-for pkg in mosdns xray-core sing-box shadowsocks-rust \
+for pkg in mosdns xray-core sing-box \
            v2ray-geodata tcping geoview chinadns-ng; do
     rm -rf "feeds/packages/net/${pkg}"
 done
 
-# passwall 的 v2ray-geodata 与 sbwml 的重复；mosdns 官方要求用 sbwml 那份，
-# 只保留一份，mosdns 和 passwall2 共用同一个 v2ray-geoip / v2ray-geosite。
-rm -rf feeds/passwall_packages/v2ray-geodata
+# shadowsocks-rust：用 feeds/packages 的 1.24.0（ring），不用 passwall 的 1.25.0（aws-lc）
+rm -rf feeds/passwall_packages/shadowsocks-rust
+
+if [ ! -d feeds/packages/net/shadowsocks-rust ]; then
+    log "ERROR: feeds/packages 里找不到 shadowsocks-rust，无法使用 1.24.0（ring）"
+    exit 1
+fi
+
+ss_version="$(sed -n 's/^PKG_VERSION:=//p' feeds/packages/net/shadowsocks-rust/Makefile)"
+case "${ss_version}" in
+    1.24.*)
+        log "shadowsocks-rust 使用 ${ss_version}（ring 后端）"
+        ;;
+    *)
+        log "WARN: shadowsocks-rust 版本为 ${ss_version}，不是 1.24.x；"
+        log "      1.25+ 改用 aws-lc 后端，aarch64 musl 交叉编译可能在链接阶段失败"
+        ;;
+esac
+
+# geo 数据（v2ray-geoip / v2ray-geosite）统一用 passwall_packages 里的
+# v2ray-geodata：数据版本固定、带 hash，mosdns 与 passwall2 共用同一份。
+# feeds/packages 里的旧版本已在上面的循环里删除，这里保留 passwall 的即可，
+# 不再引入 sbwml/v2ray-geodata，避免第二份同名的 geo 数据包。
+log "geo 数据使用 passwall_packages 的 v2ray-geodata"
 
 # 4.2 替换 golang -----------------------------------------------------------
 # mosdns / xray-core / sing-box / geoview / openlist2 需要较新的 Go 版本
@@ -136,10 +163,10 @@ rm -rf feeds/packages/lang/golang
 git clone --depth=1 --single-branch -b 27.x https://github.com/sbwml/packages_lang_golang feeds/packages/lang/golang
 
 # 4.3 替换 rust -------------------------------------------------------------
-# shadowsocks-rust 1.25 要求 rustc >= 1.91；OpenWrt 自带的 rust 版本较旧，
-# 而且 host 编译会从 ci-artifacts.rust-lang.org 下载预编译 LLVM，
-# 旧版本产物被上游清理后会报 “failed to download llvm from ci”。
-# 换成 sbwml 维护的 rust feed（版本更新、LLVM 产物可用）。
+# OpenWrt 自带的 rust 在 host 编译阶段会从 ci-artifacts.rust-lang.org 下载预编译
+# LLVM，旧版本产物被上游清理后会报 “failed to download llvm from ci”。
+# 换成 sbwml 维护的 rust feed（版本更新、LLVM 产物可用），同时保证 rustc 版本
+# 满足 shadowsocks-rust 的 rust-version 要求（1.24 需要 >= 1.88）。
 #
 # 如果仍遇到上面的下载错误，把 RUST_DOWNLOAD_CI_LLVM 改成 0：
 # 让 LLVM 在本地编译（多花 30~60 分钟，但不依赖上游产物）。
@@ -176,8 +203,6 @@ cp -rf clone/luci-theme-argon/compat/luci-app-argon-config feeds/luci/applicatio
 log "应用补丁"
 # 从 luci 集合里去掉与 luci-app-attendedsysupgrade 冲突的包
 sed -i '/luci-app-attendedsysupgrade/d' feeds/luci/collections/luci/Makefile
-# 给 golang 的 GO_ARM64 加上 crypto，和 CONFIG_TARGET_OPTIMIZATION 保持一致
-sed -i 's/GO_ARM64:=v8\.0$/GO_ARM64:=v8.0,crypto/' feeds/packages/lang/golang/golang-values.mk
 
 # ----------------------------------------------------------------------------
 # 5/6 重建 feed 索引
