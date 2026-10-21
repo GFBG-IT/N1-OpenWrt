@@ -1,32 +1,22 @@
 #!/bin/bash
 #
-# ============================================================================
-# N1（斐讯 N1 / s905d）编译前准备脚本
-#
+# N1（斐讯 N1 / s905d）编译前准备
 # 调用位置：workflow 的 “Prepare & Install feeds” 步骤
 # 工作目录：openwrt 源码根目录
-# 版本号：由环境变量 FW_VERSION 传入，默认值见 workflow 的 env.FW_VERSION
-# ============================================================================
+# 版本号：环境变量 FW_VERSION，默认值见 workflow 的 env.FW_VERSION
 #
 
 set -euo pipefail
 
 log() { printf '[diy] %s\n' "$*"; }
 
-if [ ! -x ./scripts/feeds ]; then
-    log "ERROR: 请在 openwrt 源码根目录执行"
-    exit 1
-fi
+[ -x ./scripts/feeds ] || { log "ERROR: 请在 openwrt 源码根目录执行"; exit 1; }
 
 # ---------------------------------------------------------------------------
 # 1/9 写入固件版本号
 # ---------------------------------------------------------------------------
 version="${FW_VERSION:-}"
-
-if [ -z "${version}" ]; then
-    log "ERROR: 缺少环境变量 FW_VERSION"
-    exit 1
-fi
+[ -n "${version}" ] || { log "ERROR: 缺少环境变量 FW_VERSION"; exit 1; }
 
 case "${version}" in
     *[!0-9A-Za-z._+-]*)
@@ -35,24 +25,14 @@ case "${version}" in
         ;;
 esac
 
-# include/version.mk 中的默认值行，只替换结尾的版本号
 # shellcheck disable=SC2016
 prefix='VERSION_NUMBER:=$(if $(VERSION_NUMBER),$(VERSION_NUMBER),'
 line="${prefix}${version})"
 
-if ! grep -q "^${prefix}" include/version.mk; then
-    log "ERROR: include/version.mk 中找不到 VERSION_NUMBER 默认值行"
-    exit 1
-fi
-
+grep -q "^${prefix}" include/version.mk || { log "ERROR: 找不到 VERSION_NUMBER 默认值行"; exit 1; }
 sed -i "s|^${prefix}.*)\$|${line}|" include/version.mk
-
-if ! grep -qxF "${line}" include/version.mk; then
-    log "ERROR: 版本号写入失败"
-    exit 1
-fi
-
-log "固件版本号写入成功: ${version}"
+grep -qxF "${line}" include/version.mk || { log "ERROR: 版本号写入失败"; exit 1; }
+log "固件版本号: ${version}"
 
 # ---------------------------------------------------------------------------
 # 2/9 更新 feeds
@@ -62,29 +42,54 @@ log "更新 feeds ..."
 log "feeds 更新完成"
 
 # ---------------------------------------------------------------------------
-# 3/9 删除 feeds 中与自定义包重名的旧版本
+# 3/9 调整 feeds
 # ---------------------------------------------------------------------------
-log "删除 feeds 中的同名旧包"
+log "删除 feeds 里的同名旧包"
 for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng tailscale; do
     rm -rf "feeds/packages/net/${pkg}"
 done
-log "旧包删除完成（geo 数据使用 passwall_packages 的 v2ray-geodata）"
+
+# telegraf 未选中；把版本化 Go 依赖改成 golang/host，避免编译日志 warning
+if [ -f feeds/packages/utils/telegraf/Makefile ]; then
+    sed -i 's|golang1\.27/host|golang/host|' feeds/packages/utils/telegraf/Makefile
+fi
+log "feeds 调整完成"
 
 # ---------------------------------------------------------------------------
-# 4/9 引入组件（按依赖顺序：工具链 → passwall 核心 → 依赖它们的组件）
+# 4/9 引入组件
 # ---------------------------------------------------------------------------
-# 4.1 golang（所有 Go 组件的基础）
+# 4.1 golang
 log "引入 golang 1.27.x"
 rm -rf feeds/packages/lang/golang
 git clone --depth=1 --single-branch -b 27.x https://github.com/sbwml/packages_lang_golang clone/golang
 cp -rf clone/golang feeds/packages/lang/golang
 log "golang 引入成功"
 
-# 4.2 passwall_packages（passwall2 的核心二进制 + geo 数据）
+# 4.2 passwall_packages
 log "引入 passwall_packages"
 rm -rf package/passwall_packages
 git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall-packages clone/passwall_packages
 cp -rf clone/passwall_packages package/passwall_packages
+
+# xray-core 自动取 XTLS 最新 tag 并同步 tarball 哈希
+log "获取 xray-core 最新版本 ..."
+xray_tag="$(git ls-remote --tags --refs https://github.com/XTLS/Xray-core.git 'v*' \
+    | sed -n 's#.*refs/tags/v##p' \
+    | grep -E '^[0-9]+(\.[0-9]+)+$' \
+    | sort -V | tail -n1)"
+
+[ -n "${xray_tag}" ] || { log "ERROR: 无法获取 xray-core 版本"; exit 1; }
+
+xray_tar="$(mktemp)"
+curl -fsSL "https://codeload.github.com/XTLS/Xray-core/tar.gz/v${xray_tag}?" -o "${xray_tar}"
+xray_hash="$(sha256sum "${xray_tar}" | awk '{print $1}')"
+rm -f "${xray_tar}"
+
+[ "${#xray_hash}" -eq 64 ] || { log "ERROR: xray-core 源码下载失败"; exit 1; }
+
+sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${xray_tag}|" package/passwall_packages/xray-core/Makefile
+sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${xray_hash}|" package/passwall_packages/xray-core/Makefile
+log "xray-core 版本: ${xray_tag}"
 log "passwall_packages 引入成功"
 
 # 4.3 passwall2
@@ -94,7 +99,7 @@ git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-
 cp -rf clone/passwall2 package/passwall2
 log "passwall2 引入成功"
 
-# 4.4 mosdns（复用 passwall_packages 的 geo 数据）
+# 4.4 mosdns
 log "引入 mosdns"
 rm -rf package/mosdns
 git clone --depth=1 --single-branch -b v5 https://github.com/sbwml/luci-app-mosdns clone/mosdns
@@ -120,13 +125,13 @@ log "引入 tailscale"
 rm -rf package/tailscale
 git clone --depth=1 --single-branch https://github.com/GuNanOvO/openwrt-tailscale clone/tailscale
 cp -rf clone/tailscale/package/tailscale package/tailscale
-# 上游 Makefile 没写 golang/host 构建依赖，补上，避免并发编译时 Go 还没就绪
+# 上游 Makefile 缺少 golang/host 构建依赖
 if ! grep -q 'PKG_BUILD_DEPENDS.*golang/host' package/tailscale/Makefile; then
     sed -i '/^PKG_BUILD_DIR:=/a PKG_BUILD_DEPENDS+=golang/host' package/tailscale/Makefile
 fi
 log "tailscale 引入成功"
 
-# 4.8 tailscale LuCI（依赖 tailscale）
+# 4.8 tailscale LuCI
 log "引入 luci-app-tailscale-community"
 rm -rf package/luci-app-tailscale-community
 git clone --depth=1 --single-branch https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community clone/tailscale-luci
@@ -225,7 +230,7 @@ log "重建 feed 索引 ..."
 log "feed 索引重建完成"
 
 # ---------------------------------------------------------------------------
-# 9/9 清理临时目录
+# 9/9 清理
 # ---------------------------------------------------------------------------
 rm -rf clone
 log "diy.sh 执行完成"
