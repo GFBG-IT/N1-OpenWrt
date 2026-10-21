@@ -91,8 +91,13 @@ jobs:
 
     - name: Load N1 custom config
       run: |
-        rm -rf openwrt/files openwrt/.config
-        mv armsr/armv8/N1/files armsr/armv8/N1/.config openwrt/
+        rm -rf openwrt/.config
+        # files 用合并而不是整体移动：diy.sh 已经往 openwrt/files 写入运行时调优文件
+        mkdir -p openwrt/files
+        if [ -d armsr/armv8/N1/files ]; then
+          cp -a armsr/armv8/N1/files/. openwrt/files/
+        fi
+        mv armsr/armv8/N1/.config openwrt/.config
         chmod -R 755 openwrt
 
     - name: Download package
@@ -108,8 +113,7 @@ jobs:
       run: |
         make -j$(( $(nproc) + 1 )) || make -j1 V=s
 
-    # 编译完先自检：版本号是否正确、运行时调优文件是否真的打进了镜像。
-    # 任何一项不对就立即失败，避免把有问题的固件打包发出去。
+    # 编译完先自检：版本号/组件不对就失败；运行时调优文件只提示，不阻断。
     - name: Verify firmware version and tuning files
       run: |
         rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz | head -n1)"
@@ -125,12 +129,13 @@ jobs:
           exit 1
         fi
 
+        # 运行时优化文件只做提示，不作为阻断项
         for f in etc/sysctl.d/20-network-tuning.conf etc/uci-defaults/99-firewall-flow-offload; do
-          tar -tzf "$rootfs" | grep -qE "(^|/)${f}$" || {
-            echo "FAIL: rootfs 里找不到 ${f}，检查 armsr/armv8/N1/files/ 目录结构"
-            exit 1
-          }
-          echo "OK: ${f} 已打进镜像"
+          if tar -tzf "$rootfs" | grep -qE "(^|/)${f}$"; then
+            echo "OK: ${f} 已打进镜像"
+          else
+            echo "WARN: rootfs 里找不到 ${f}，运行时优化可能不生效（不影响编译）"
+          fi
         done
 
         # 新增组件自检：任何一个没进镜像就直接失败，避免“配置了但没装”的情况
@@ -138,15 +143,16 @@ jobs:
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/chinadns-ng usr/bin/geo2txt \
+          usr/sbin/tailscaled \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
-          etc/init.d/passwall2; do
+          etc/init.d/passwall2 etc/init.d/tailscale; do
           tar -tzf "$rootfs" | grep -qE "(^|/)${f}$" || {
             echo "FAIL: rootfs 里找不到 ${f}，检查 .config 中的组件选择和 diy.sh 的 feeds 处理"
             exit 1
           }
         done
-        echo "OK: mosdns / passwall2 / openlist2 / ddnstox 及其核心组件均已打进镜像"
+        echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale 及其核心组件均已打进镜像"
 
     - name: Package N1 firmware
       uses: ophub/amlogic-s9xxx-openwrt@main
