@@ -71,44 +71,51 @@ done
 log "旧包删除完成（geo 数据使用 passwall_packages 的 v2ray-geodata）"
 
 # ---------------------------------------------------------------------------
-# 4/9 引入组件
+# 4/9 引入组件（按依赖顺序：工具链 → passwall 核心 → 依赖它们的组件）
 # ---------------------------------------------------------------------------
-# 4.1 mosdns
-log "引入 mosdns"
-rm -rf package/mosdns
-git clone --depth=1 --single-branch -b v5 https://github.com/sbwml/luci-app-mosdns clone/mosdns
-cp -rf clone/mosdns package/mosdns
-log "mosdns 引入成功"
+# 4.1 golang（所有 Go 组件的基础）
+log "引入 golang 1.27.x"
+rm -rf feeds/packages/lang/golang
+git clone --depth=1 --single-branch -b 27.x https://github.com/sbwml/packages_lang_golang clone/golang
+cp -rf clone/golang feeds/packages/lang/golang
+log "golang 引入成功"
 
-# 4.2 openlist2
-log "引入 openlist2"
-rm -rf package/openlist2
-git clone --depth=1 --single-branch https://github.com/sbwml/luci-app-openlist2 clone/openlist2
-cp -rf clone/openlist2 package/openlist2
-log "openlist2 引入成功"
-
-# 4.3 ddnstox
-log "引入 ddnstox"
-rm -rf package/ddnstox
-git clone --depth=1 --single-branch https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox
-cp -rf clone/ddnstox package/ddnstox
-log "ddnstox 引入成功"
-
-# 4.4 passwall2
-log "引入 passwall2"
-rm -rf package/passwall2
-git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall2 clone/passwall2
-cp -rf clone/passwall2 package/passwall2
-log "passwall2 引入成功"
-
-# 4.5 passwall_packages
+# 4.2 passwall_packages（passwall2 的核心二进制 + geo 数据）
 log "引入 passwall_packages"
 rm -rf package/passwall_packages
 git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall-packages clone/passwall_packages
 cp -rf clone/passwall_packages package/passwall_packages
 log "passwall_packages 引入成功"
 
-# 4.6 tailscale
+# 4.3 passwall2
+log "引入 passwall2"
+rm -rf package/passwall2
+git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall2 clone/passwall2
+cp -rf clone/passwall2 package/passwall2
+log "passwall2 引入成功"
+
+# 4.4 mosdns（复用 passwall_packages 的 geo 数据）
+log "引入 mosdns"
+rm -rf package/mosdns
+git clone --depth=1 --single-branch -b v5 https://github.com/sbwml/luci-app-mosdns clone/mosdns
+cp -rf clone/mosdns package/mosdns
+log "mosdns 引入成功"
+
+# 4.5 openlist2
+log "引入 openlist2"
+rm -rf package/openlist2
+git clone --depth=1 --single-branch https://github.com/sbwml/luci-app-openlist2 clone/openlist2
+cp -rf clone/openlist2 package/openlist2
+log "openlist2 引入成功"
+
+# 4.6 ddnstox
+log "引入 ddnstox"
+rm -rf package/ddnstox
+git clone --depth=1 --single-branch https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox
+cp -rf clone/ddnstox package/ddnstox
+log "ddnstox 引入成功"
+
+# 4.7 tailscale
 log "引入 tailscale"
 rm -rf package/tailscale
 git clone --depth=1 --single-branch https://github.com/GuNanOvO/openwrt-tailscale clone/tailscale
@@ -119,19 +126,12 @@ if ! grep -q 'PKG_BUILD_DEPENDS.*golang/host' package/tailscale/Makefile; then
 fi
 log "tailscale 引入成功"
 
-# 4.7 tailscale LuCI
+# 4.8 tailscale LuCI（依赖 tailscale）
 log "引入 luci-app-tailscale-community"
 rm -rf package/luci-app-tailscale-community
 git clone --depth=1 --single-branch https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community clone/tailscale-luci
 cp -rf clone/tailscale-luci/luci-app-tailscale-community package/luci-app-tailscale-community
 log "luci-app-tailscale-community 引入成功"
-
-# 4.8 golang
-log "引入 golang 1.27.x"
-rm -rf feeds/packages/lang/golang
-git clone --depth=1 --single-branch -b 27.x https://github.com/sbwml/packages_lang_golang clone/golang
-cp -rf clone/golang feeds/packages/lang/golang
-log "golang 引入成功"
 
 # 4.9 autocore
 log "引入 autocore"
