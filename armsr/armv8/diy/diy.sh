@@ -138,7 +138,40 @@ git clone --depth=1 --single-branch https://github.com/Tokisaki-Galaxy/luci-app-
 cp -rf clone/tailscale-luci/luci-app-tailscale-community package/luci-app-tailscale-community
 log "luci-app-tailscale-community 引入成功"
 
-# 4.9 autocore
+# 4.9 nikki（mihomo 使用稳定版 mihomo-meta，不引入 alpha）
+log "引入 nikki"
+rm -rf package/nikki package/luci-app-nikki package/mihomo-meta
+git clone --depth=1 --single-branch https://github.com/nikkinikki-org/OpenWrt-nikki clone/nikki
+cp -rf clone/nikki/nikki package/nikki
+cp -rf clone/nikki/luci-app-nikki package/luci-app-nikki
+cp -rf clone/nikki/mihomo-meta package/mihomo-meta
+
+# mihomo 使用官方源码的最新稳定版（排除 alpha / rc）
+log "获取 mihomo 最新稳定版 ..."
+mihomo_tag="$(git ls-remote --tags --refs https://github.com/MetaCubeX/mihomo.git 'v*' \
+    | sed -n 's#.*refs/tags/##p' \
+    | grep -E '^v[0-9]+(\.[0-9]+)+$' \
+    | sort -V | tail -n1)"
+
+[ -n "${mihomo_tag}" ] || { log "ERROR: 无法获取 mihomo 版本"; exit 1; }
+
+mihomo_ver="${mihomo_tag#v}"
+sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${mihomo_ver}|" package/mihomo-meta/Makefile
+sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
+sed -i "s|^PKG_BUILD_VERSION:=.*$|PKG_BUILD_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
+sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/mihomo-meta/Makefile
+log "mihomo 版本: ${mihomo_tag}"
+log "nikki 引入成功"
+
+# 4.10 momo（sing-box 复用 passwall_packages）
+log "引入 momo"
+rm -rf package/momo package/luci-app-momo
+git clone --depth=1 --single-branch https://github.com/nikkinikki-org/OpenWrt-momo clone/momo
+cp -rf clone/momo/momo package/momo
+cp -rf clone/momo/luci-app-momo package/luci-app-momo
+log "momo 引入成功"
+
+# 4.11 autocore
 log "引入 autocore"
 rm -rf feeds/packages/utils/autocore
 git clone --depth=1 --single-branch --branch openwrt-25.12 https://github.com/sbwml/autocore-arm clone/autocore
@@ -146,21 +179,21 @@ mkdir -p feeds/packages/utils
 cp -rf clone/autocore feeds/packages/utils/autocore
 log "autocore 引入成功"
 
-# 4.10 luci-app-amlogic
+# 4.12 luci-app-amlogic
 log "引入 luci-app-amlogic"
 rm -rf feeds/luci/applications/luci-app-amlogic
 git clone --depth=1 --single-branch https://github.com/ophub/luci-app-amlogic clone/amlogic
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 log "luci-app-amlogic 引入成功"
 
-# 4.11 luci-app-daed
+# 4.13 luci-app-daed
 log "引入 luci-app-daed"
 rm -rf feeds/luci/applications/luci-app-daed
 git clone --depth=1 --single-branch https://github.com/QiuSimons/luci-app-daed clone/daed
 cp -rf clone/daed/luci-app-daed feeds/luci/applications/
 log "luci-app-daed 引入成功"
 
-# 4.12 argon 主题
+# 4.14 argon 主题
 log "引入 argon 主题"
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 git clone --depth=1 --single-branch https://github.com/jerrykuku/luci-theme-argon clone/argon
@@ -186,7 +219,7 @@ log "LuCI 菜单分类调整完成"
 # 6/9 写入运行时优化文件
 # ---------------------------------------------------------------------------
 log "写入运行时优化文件"
-mkdir -p files/etc/sysctl.d files/etc/uci-defaults
+mkdir -p files/etc/sysctl.d files/etc/uci-defaults files/etc/hotplug.d/net
 
 cat > files/etc/sysctl.d/20-network-tuning.conf <<'EOF'
 # N1 网络性能调优：BBR 配套 fq + TCP 缓冲
@@ -199,6 +232,13 @@ net.ipv4.tcp_wmem=4096 65536 8388608
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
 net.ipv4.tcp_fastopen=3
+net.netfilter.nf_conntrack_tcp_max_retrans=5
+EOF
+
+cat > files/etc/sysctl.d/99-zram.conf <<'EOF'
+# zram 配套：优先换出到压缩内存
+vm.page-cluster=0
+vm.swappiness=100
 EOF
 
 cat > files/etc/uci-defaults/99-firewall-flow-offload <<'EOF'
@@ -214,6 +254,57 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
+
+cat > files/etc/uci-defaults/99-mitigations-off <<'EOF'
+#!/bin/sh
+# 首次开机：把 mitigations=off 写入 boot 分区 uEnv.txt，下次启动生效
+[ -f /boot/uEnv.txt ] || mount /boot 2>/dev/null
+[ -f /boot/uEnv.txt ] || exit 0
+grep -q 'mitigations=off' /boot/uEnv.txt && exit 0
+
+cp -f /boot/uEnv.txt /boot/uEnv.txt.bak 2>/dev/null
+sed -i 's/\r$//' /boot/uEnv.txt
+
+if grep -q '^APPEND=' /boot/uEnv.txt; then
+	sed -i '/^APPEND=/ s/$/ mitigations=off/' /boot/uEnv.txt
+	sync
+	logger -t n1-tuning "mitigations=off 已写入 /boot/uEnv.txt，重启后生效"
+fi
+
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-mitigations-off
+
+cat > files/etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers <<'EOF'
+#!/bin/sh
+# 网卡出现时把 RX/TX ring 设到最大，失败静默跳过
+[ "$ACTION" = "add" ] || exit 0
+[ -z "$DEVICENAME" ] && exit 0
+
+command -v ethtool >/dev/null 2>&1 || exit 0
+
+NIC="$DEVICENAME"
+[ ! -d "/sys/class/net/$NIC/device" ] && exit 0
+[ "$(cat "/sys/class/net/$NIC/type" 2>/dev/null)" != "1" ] && exit 0
+
+ETHTOOL_G="$(ethtool -g "$NIC" 2>/dev/null)"
+[ -z "$ETHTOOL_G" ] && exit 0
+
+RX_MAX="$(echo "$ETHTOOL_G" | awk '/RX:/ {print $2; exit}')"
+TX_MAX="$(echo "$ETHTOOL_G" | awk '/TX:/ {print $2; exit}')"
+
+[ -n "$RX_MAX" ] && [ "$RX_MAX" != "0" ] && ethtool -G "$NIC" rx "$RX_MAX" 2>/dev/null
+[ -n "$TX_MAX" ] && [ "$TX_MAX" != "0" ] && ethtool -G "$NIC" tx "$TX_MAX" 2>/dev/null
+
+if ethtool -c "$NIC" 2>/dev/null | grep -q "Adaptive RX:"; then
+    ethtool -C "$NIC" adaptive-rx on adaptive-tx on >/dev/null 2>&1
+fi
+
+logger -t net-buffer "Maximized ring buffers for $NIC"
+EOF
+
+chmod 755 files/etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers
 log "运行时优化文件写入成功"
 
 # ---------------------------------------------------------------------------
