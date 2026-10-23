@@ -1,27 +1,17 @@
 name: Build ImmortalWrt-25.12 for armsr_armv8
 
 on:
-  # 手动触发：可以填 fw_version 临时指定版本号，留空则用下面 env.FW_VERSION 的默认值
   workflow_dispatch:
     inputs:
       fw_version:
         description: "固件版本号（留空则使用 env.FW_VERSION 的默认值）"
         required: false
         default: ""
-  # 定时触发：每月 1 号和 16 号 00:00（北京时间）
   schedule:
     - cron: "0 0 1,16 * *"
 
 env:
-  # ===========================================================================
-  # 固件版本号：全仓库唯一的默认值定义处，改这一行即可换默认版本
-  #   手动触发 -> 取输入框 fw_version；留空 -> 用后面的 '25.12.6'
-  #   定时触发 -> 没有输入框，直接使用后面的 '25.12.6'
-  # 显示效果：ImmortalWrt 25.12.6 r0-214e26e / LuCI openwrt-25.12 branch ...
-  # 这里只决定“显示用的版本号”；源码里的 VERSION_REPO 是 apk/opkg 软件源地址，不要动它
-  # ===========================================================================
   FW_VERSION: ${{ github.event.inputs.fw_version || '25.12.6' }}
-
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-25.12
@@ -40,7 +30,6 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo -E apt-get -qq update > /dev/null
-        # OpenWrt 编译依赖（不再需要 Rust：已不编译 shadowsocks-rust）
         sudo -E apt-get -qq install -y \
           ack antlr3 asciidoc autoconf automake autopoint \
           binutils bison build-essential bzip2 \
@@ -66,7 +55,6 @@ jobs:
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    # 清理 runner 上用不到的大目录，给编译留出磁盘空间
     - name: Free disk space
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -83,16 +71,12 @@ jobs:
     - name: Prepare & Install feeds
       working-directory: ./openwrt
       run: |
-        # diy.sh 内部按顺序执行：写版本号 → feeds update -a → 删重名包
-        #                        → 引入组件（package/ 等）→ feeds update -i
         bash $GITHUB_WORKSPACE/armsr/armv8/diy/diy.sh
-        # 安装所有 feed 包
         ./scripts/feeds install -a
 
     - name: Load N1 custom config
       run: |
         rm -rf openwrt/.config
-        # files 用合并而不是整体移动：diy.sh 已经往 openwrt/files 写入运行时调优文件
         mkdir -p openwrt/files
         if [ -d armsr/armv8/N1/files ]; then
           cp -a armsr/armv8/N1/files/. openwrt/files/
@@ -104,7 +88,6 @@ jobs:
       working-directory: ./openwrt
       run: |
         make defconfig
-        # 确认自定义编译参数生效（没开 CONFIG_TARGET_OPTIONS 的话，这里会显示默认的 -Os -pipe -mcpu=generic）
         grep -E '^CONFIG_(TARGET_OPTIONS|TARGET_OPTIMIZATION)=' .config
         make download -j$(( $(nproc) * 2 ))
 
@@ -113,14 +96,21 @@ jobs:
       run: |
         make -j$(( $(nproc) + 1 )) || make -j1 V=s
 
-    # 编译完先自检：版本号/组件不对就失败；运行时调优文件只提示，不阻断。
     - name: Verify firmware version and tuning files
       run: |
         rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz | head -n1)"
-        member="$(tar -tzf "$rootfs" | grep -E '(^|/)etc/openwrt_release$' | head -n1)"
+        members="$(mktemp)"
+        tar -tzf "$rootfs" > "$members"
+
+        member="$(grep -E '(^|/)etc/openwrt_release$' "$members" | head -n1)"
+        if [ -z "$member" ]; then
+          echo "FAIL: rootfs 里找不到 etc/openwrt_release"
+          exit 1
+        fi
 
         echo "读取 ${rootfs} 中的 ${member}:"
-        tar -xOzf "$rootfs" "$member" | tee /tmp/openwrt_release
+        tar -xOzf "$rootfs" "$member" > /tmp/openwrt_release
+        cat /tmp/openwrt_release
 
         if grep -q "DISTRIB_RELEASE='${FW_VERSION}'" /tmp/openwrt_release; then
           echo "OK: 固件版本号已生效 -> ${FW_VERSION}"
@@ -129,21 +119,19 @@ jobs:
           exit 1
         fi
 
-        # 运行时优化文件只做提示，不作为阻断项
         for f in \
           etc/sysctl.d/20-network-tuning.conf \
           etc/sysctl.d/99-zram.conf \
           etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers \
           etc/uci-defaults/99-firewall-flow-offload \
           etc/uci-defaults/99-mitigations-off; do
-          if tar -tzf "$rootfs" | grep -qE "(^|/)${f}$"; then
+          if grep -qE "(^|/)${f}$" "$members"; then
             echo "OK: ${f} 已打进镜像"
           else
             echo "WARN: rootfs 里找不到 ${f}，运行时优化可能不生效（不影响编译）"
           fi
         done
 
-        # 新增组件自检：任何一个没进镜像就直接失败，避免“配置了但没装”的情况
         for f in \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/xray usr/bin/sing-box \
@@ -153,11 +141,12 @@ jobs:
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
           etc/init.d/passwall2 etc/init.d/tailscale \
           etc/init.d/nikki etc/init.d/momo; do
-          tar -tzf "$rootfs" | grep -qE "(^|/)${f}$" || {
+          if ! grep -qE "(^|/)${f}$" "$members"; then
             echo "FAIL: rootfs 里找不到 ${f}，检查 .config 中的组件选择和 diy.sh 的 feeds 处理"
             exit 1
-          }
+          fi
         done
+        rm -f "$members"
         echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale / nikki / momo 及其核心组件均已打进镜像"
 
     - name: Package N1 firmware
