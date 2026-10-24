@@ -45,7 +45,7 @@ log "feeds 更新完成"
 # 3/9 调整 feeds
 # ---------------------------------------------------------------------------
 log "删除 feeds 里的同名旧包"
-for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng tailscale; do
+for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng tailscale dae daed; do
     rm -rf "feeds/packages/net/${pkg}"
 done
 
@@ -104,6 +104,10 @@ log "引入 mosdns"
 rm -rf package/mosdns
 git clone --depth=1 --single-branch -b v5 https://github.com/sbwml/luci-app-mosdns clone/mosdns
 cp -rf clone/mosdns package/mosdns
+# 去掉调试符号，减小 mosdns 二进制
+if ! grep -q '^GO_PKG_LDFLAGS:=' package/mosdns/mosdns/Makefile; then
+    sed -i '/^GO_PKG_LDFLAGS_X:=/i GO_PKG_LDFLAGS:=-s -w' package/mosdns/mosdns/Makefile
+fi
 log "mosdns 引入成功"
 
 # 4.5 openlist2
@@ -186,12 +190,16 @@ git clone --depth=1 --single-branch https://github.com/ophub/luci-app-amlogic cl
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 log "luci-app-amlogic 引入成功"
 
-# 4.13 luci-app-daed
-log "引入 luci-app-daed"
-rm -rf feeds/luci/applications/luci-app-daed
-git clone --depth=1 --single-branch https://github.com/QiuSimons/luci-app-daed clone/daed
-cp -rf clone/daed/luci-app-daed feeds/luci/applications/
-log "luci-app-daed 引入成功"
+# 4.13 dae
+log "引入 dae"
+rm -rf package/dae feeds/luci/applications/luci-app-dae feeds/luci/applications/luci-app-daed
+git clone --depth=1 --single-branch https://github.com/QiuSimons/luci-app-dae clone/dae
+cp -rf clone/dae/dae package/dae
+cp -rf clone/dae/luci-app-dae feeds/luci/applications/luci-app-dae
+# 显式依赖 geo 数据，复用 passwall_packages 的 v2ray-geodata
+sed -i 's|^LUCI_DEPENDS:=.*$|LUCI_DEPENDS:=+dae +luci-compat +v2ray-geoip +v2ray-geosite|' \
+    feeds/luci/applications/luci-app-dae/Makefile
+log "dae 引入成功"
 
 # 4.14 argon 主题
 log "引入 argon 主题"
@@ -200,6 +208,37 @@ git clone --depth=1 --single-branch https://github.com/jerrykuku/luci-theme-argo
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 cp -rf clone/argon/compat/luci-app-argon-config feeds/luci/applications/
 log "argon 主题引入成功"
+
+# 4.15 修正独立 LuCI 包的版本号
+# 这些包是从 git 子目录复制进来的，目录里没有 .git；luci.mk 的 findrev 会回退成 0，
+# apk 里就显示 0。显式写入 PKG_PO_VERSION（i18n 包用它）即可。
+fix_luci_po_version() {
+    makefile="$1"
+    [ -f "$makefile" ] || return 0
+    grep -q '^PKG_VERSION:=' "$makefile" || return 0
+    if grep -q '^PKG_PO_VERSION:=' "$makefile"; then
+        return 0
+    fi
+    sed -i "/^PKG_VERSION:=/a PKG_PO_VERSION:=\$(PKG_VERSION)" "$makefile"
+}
+
+fix_luci_po_version package/luci-app-nikki/Makefile
+fix_luci_po_version package/luci-app-momo/Makefile
+fix_luci_po_version package/mosdns/luci-app-mosdns/Makefile
+fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
+fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
+fix_luci_po_version package/passwall2/luci-app-passwall2/Makefile
+fix_luci_po_version feeds/luci/applications/luci-app-dae/Makefile
+fix_luci_po_version feeds/luci/applications/luci-app-amlogic/Makefile
+fix_luci_po_version feeds/luci/applications/luci-app-argon-config/Makefile
+
+# tailscale LuCI 没有 PKG_VERSION，用源码提交日期作为版本
+tailscale_luci_ver="$(git -C clone/tailscale-luci log -1 --format=%cd --date=format:%Y.%m.%d 2>/dev/null || date +%Y.%m.%d)"
+[ -n "$tailscale_luci_ver" ] || tailscale_luci_ver="$(date +%Y.%m.%d)"
+if ! grep -q '^PKG_VERSION:=' package/luci-app-tailscale-community/Makefile; then
+    sed -i "/^LUCI_TITLE:=/i PKG_VERSION:=${tailscale_luci_ver}\nPKG_PO_VERSION:=${tailscale_luci_ver}" package/luci-app-tailscale-community/Makefile
+fi
+log "LuCI 包版本修正完成"
 
 # ---------------------------------------------------------------------------
 # 5/9 调整 LuCI 菜单分类
@@ -211,7 +250,7 @@ sed -i 's|admin/services/irqbalance|admin/system/irqbalance|g' \
     feeds/luci/applications/luci-app-irqbalance/root/usr/share/luci/menu.d/luci-app-irqbalance.json
 sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' \
     package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json
-sed -i 's|admin/vpn/tailscale|admin/services/tailscale|g' \
+sed -i 's|admin/vpn/tailscale|admin/network/tailscale|g' \
     package/luci-app-tailscale-community/root/usr/share/luci/menu.d/luci-app-tailscale-community.json
 log "LuCI 菜单分类调整完成"
 
@@ -232,6 +271,7 @@ net.ipv4.tcp_wmem=4096 65536 8388608
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
 net.ipv4.tcp_fastopen=3
+net.netfilter.nf_conntrack_max=65536
 net.netfilter.nf_conntrack_tcp_max_retrans=5
 EOF
 
@@ -254,6 +294,17 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
+
+cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
+#!/bin/sh
+[ -f /etc/config/mosdns ] || exit 0
+uci -q set mosdns.config.cache_size='20480'
+uci -q set mosdns.config.lazy_cache_ttl='259200'
+uci -q commit mosdns
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-mosdns-tuning
 
 cat > files/etc/uci-defaults/99-mitigations-off <<'EOF'
 #!/bin/sh

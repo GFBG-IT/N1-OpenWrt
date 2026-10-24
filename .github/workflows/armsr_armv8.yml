@@ -124,6 +124,7 @@ jobs:
           etc/sysctl.d/99-zram.conf \
           etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers \
           etc/uci-defaults/99-firewall-flow-offload \
+          etc/uci-defaults/99-mosdns-tuning \
           etc/uci-defaults/99-mitigations-off; do
           if grep -qE "(^|/)${f}$" "$members"; then
             echo "OK: ${f} 已打进镜像"
@@ -136,18 +137,18 @@ jobs:
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/chinadns-ng usr/bin/geo2txt \
-          usr/sbin/tailscaled usr/libexec/mihomo \
+          usr/bin/dae usr/sbin/tailscaled usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
           etc/init.d/passwall2 etc/init.d/tailscale \
-          etc/init.d/nikki etc/init.d/momo; do
+          etc/init.d/nikki etc/init.d/momo etc/init.d/dae; do
           if ! grep -qE "(^|/)${f}$" "$members"; then
             echo "FAIL: rootfs 里找不到 ${f}，检查 .config 中的组件选择和 diy.sh 的 feeds 处理"
             exit 1
           fi
         done
         rm -f "$members"
-        echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale / nikki / momo 及其核心组件均已打进镜像"
+        echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale / nikki / momo / dae 及其核心组件均已打进镜像"
 
     - name: Package N1 firmware
       uses: ophub/amlogic-s9xxx-openwrt@main
@@ -156,7 +157,7 @@ jobs:
         openwrt_board: s905d
         kernel_usage: flippy
         openwrt_kernel: 6.12.y
-        openwrt_size: 256/1024
+        openwrt_size: 256/1280
         builder_name: anonymous‌
 
     - name: Upload firmware to release
