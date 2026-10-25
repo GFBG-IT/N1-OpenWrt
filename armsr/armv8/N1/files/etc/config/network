@@ -23,5 +23,6 @@ config device
 	option dadtransmits '0'
 
 config globals 'globals'
-	option packet_steering '0'
+	option packet_steering '1'
+	option steering_flows '256'
 	option ula_prefix 'fdb4:d3dc:ec5b::/48'

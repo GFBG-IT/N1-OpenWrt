@@ -96,7 +96,6 @@ PY
     log "进程列表已兼容 BusyBox top 的 CPU 列"
 fi
 
-# 默认语言：简体中文
 luci_config="feeds/luci/modules/luci-base/root/etc/config/luci"
 if [ -f "$luci_config" ]; then
     sed -i "s|option lang 'auto'|option lang 'zh_cn'|" "$luci_config"
@@ -312,7 +311,6 @@ if [ -n "$openlist_tag" ]; then
     fi
 fi
 
-# sing-box
 singbox_tag="$(github_latest_tag https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$singbox_tag" ]; then
     singbox_ver="${singbox_tag#v}"
@@ -326,7 +324,6 @@ if [ -n "$singbox_tag" ]; then
     fi
 fi
 
-# geoview
 geoview_tag="$(github_latest_tag https://github.com/snowie2000/geoview.git '*' '^[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$geoview_tag" ]; then
     geoview_hash="$(fetch_sha256 "https://codeload.github.com/snowie2000/geoview/tar.gz/${geoview_tag}?" || true)"
@@ -353,7 +350,7 @@ if [ -n "$tailscale_tag" ]; then
     fi
 fi
 
-# dae：跟随 olivesx/dae 的 HEAD
+# dae：跟随 olicesx/dae 的 HEAD
 dae_commit="$(git ls-remote https://github.com/olicesx/dae.git HEAD 2>/dev/null | awk '{print $1; exit}')"
 if [ -n "$dae_commit" ]; then
     dae_ver="$(date +%Y.%m.%d)"
@@ -488,7 +485,8 @@ net.ipv4.tcp_wmem=4096 65536 8388608
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
 net.ipv4.tcp_fastopen=3
-net.netfilter.nf_conntrack_max=65536
+net.netfilter.nf_conntrack_max=262144
+net.netfilter.nf_conntrack_buckets=65536
 net.netfilter.nf_conntrack_tcp_max_retrans=5
 EOF
 
@@ -514,10 +512,23 @@ chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
 
 cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
 #!/bin/sh
+# DNS 架构：dnsmasq 只保留 DHCP（port 0 关闭 DNS 监听），解析全部由 mosdns 监听 53 端口承担
 [ -f /etc/config/mosdns ] || exit 0
+
+uci -q set mosdns.config.enabled='1'
+uci -q set mosdns.config.listen_port='53'
+uci -q set mosdns.config.listen_address='0.0.0.0'
+uci -q set mosdns.config.redirect='0'
 uci -q set mosdns.config.cache_size='20480'
 uci -q set mosdns.config.lazy_cache_ttl='259200'
+uci -q set mosdns.config.log_level='error'
 uci -q commit mosdns
+
+if [ -f /etc/config/dhcp ] && uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
+	uci -q set dhcp.@dnsmasq[0].port='0'
+	uci -q commit dhcp
+fi
+
 exit 0
 EOF
 
@@ -570,14 +581,16 @@ chmod 755 files/etc/uci-defaults/99-custom-feeds
 
 cat > files/etc/uci-defaults/99-distfeeds-video <<'EOF'
 #!/bin/sh
+. /etc/openwrt_release
+
 list="/etc/apk/repositories.d/distfeeds.list"
 [ -f "$list" ] || exit 0
 
-old="https://mirror.nju.edu.cn/immortalwrt/releases/25.12-SNAPSHOT/packages/aarch64_generic/video/packages.adb"
-new="https://mirrors.ustc.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/video/packages.adb"
+new="https://mirrors.ustc.edu.cn/openwrt/releases/${DISTRIB_RELEASE}/packages/${DISTRIB_ARCH}/video/packages.adb"
 
-if grep -qxF "$old" "$list"; then
-    sed -i "s|${old}|${new}|g" "$list"
+# 按目录名匹配 video feed 整行替换，版本号跟随固件，避免硬编码；已是目标地址时不改
+if grep -q '/video/packages.adb' "$list" && ! grep -qxF "$new" "$list"; then
+	sed -i "s|.*video/packages\.adb.*|$new|" "$list"
 fi
 
 exit 0
@@ -605,6 +618,46 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-mitigations-off
+
+cat > files/etc/uci-defaults/99-hold-core-packages <<'EOF'
+#!/bin/sh
+# apk 没有 hold 子命令，等价做法是把 world 里的包名改写成 名字=版本：
+# DNS/防火墙关键包固定在固件内置版本，apk upgrade 不会自动升级它们
+world=/etc/apk/world
+db=/lib/apk/db/installed
+[ -f "$world" ] && [ -f "$db" ] || exit 0
+
+pkgver() {
+	awk -v p="$1" '
+		/^P:/ { n = substr($0, 3) }
+		/^V:/ { if (n == p) { print substr($0, 3); exit } }
+	' "$db"
+}
+
+for pkg in dnsmasq-full mosdns firewall4 luci-app-firewall; do
+	grep -qx "$pkg" "$world" || continue
+	ver="$(pkgver "$pkg")"
+	case "$ver" in ''|*[!A-Za-z0-9.+_~-]*) continue ;; esac
+	sed -i "s|^$pkg$|$pkg=$ver|" "$world"
+done
+
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-hold-core-packages
+
+cat > files/etc/uci-defaults/99-dropbear-lan <<'EOF'
+#!/bin/sh
+# SSH 只监听 LAN 侧
+if [ -f /etc/config/dropbear ] && uci -q get dropbear.@dropbear[0] >/dev/null 2>&1; then
+	uci -q set dropbear.@dropbear[0].Interface='lan'
+	uci -q commit dropbear
+fi
+
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-dropbear-lan
 
 cat > files/etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers <<'EOF'
 #!/bin/sh

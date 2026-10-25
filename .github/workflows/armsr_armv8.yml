@@ -127,7 +127,9 @@ jobs:
           etc/apk/keys/openwrt-passwall-build.pem \
           etc/uci-defaults/99-custom-feeds \
           etc/uci-defaults/99-distfeeds-video \
+          etc/uci-defaults/99-dropbear-lan \
           etc/uci-defaults/99-firewall-flow-offload \
+          etc/uci-defaults/99-hold-core-packages \
           etc/uci-defaults/99-luci-lang \
           etc/uci-defaults/99-mosdns-tuning \
           etc/uci-defaults/99-mitigations-off; do
@@ -141,7 +143,7 @@ jobs:
         for f in \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/xray usr/bin/sing-box \
-          usr/bin/tcping usr/bin/geoview usr/bin/chinadns-ng usr/bin/geo2txt \
+          usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
           usr/bin/dae usr/sbin/tailscaled usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
@@ -163,7 +165,7 @@ jobs:
         kernel_usage: flippy
         openwrt_kernel: 6.12.y
         openwrt_size: 256/1280
-        builder_name: anonymous‌
+        builder_name: anonymous
 
     - name: Upload firmware to release
       uses: softprops/action-gh-release@master
