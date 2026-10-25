@@ -127,11 +127,15 @@ jobs:
           etc/apk/keys/openwrt-passwall-build.pem \
           etc/uci-defaults/99-custom-feeds \
           etc/uci-defaults/99-distfeeds-video \
-          etc/uci-defaults/99-dropbear-lan \
+          etc/uci-defaults/99-openssh-sshd-user \
           etc/uci-defaults/99-firewall-flow-offload \
           etc/uci-defaults/99-hold-core-packages \
           etc/uci-defaults/99-luci-lang \
           etc/uci-defaults/99-mosdns-tuning \
+          etc/uci-defaults/99-zram-size \
+          etc/rc.d/S96-rps-4cpu \
+          etc/ssh/sshd_config \
+          etc/ssh/ssh_config \
           etc/uci-defaults/99-mitigations-off; do
           if grep -qE "(^|/)${f}$" "$members"; then
             echo "OK: ${f} 已打进镜像"
@@ -144,18 +148,19 @@ jobs:
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
-          usr/bin/dae usr/sbin/tailscaled usr/libexec/mihomo \
+          usr/sbin/tailscaled usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
           etc/init.d/passwall2 etc/init.d/tailscale \
-          etc/init.d/nikki etc/init.d/momo etc/init.d/dae; do
+          etc/init.d/nikki etc/init.d/momo \
+          usr/sbin/sshd; do
           if ! grep -qE "(^|/)${f}$" "$members"; then
             echo "FAIL: rootfs 里找不到 ${f}，检查 .config 中的组件选择和 diy.sh 的 feeds 处理"
             exit 1
           fi
         done
         rm -f "$members"
-        echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale / nikki / momo / dae 及其核心组件均已打进镜像"
+          echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale / nikki / momo 及其核心组件均已打进镜像"
 
     - name: Package N1 firmware
       uses: ophub/amlogic-s9xxx-openwrt@main

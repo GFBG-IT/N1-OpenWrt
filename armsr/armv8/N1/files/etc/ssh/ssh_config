@@ -1,0 +1,5 @@
+# ssh_config（客户端，从本机 ssh 出去时生效）
+# 优化参考 flippy 的 SSH_CIPHERS：AES-GCM 优先（ARMv8 crypto 硬件加速），chacha20 兜底
+
+Host *
+	Ciphers aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr,chacha20-poly1305@openssh.com

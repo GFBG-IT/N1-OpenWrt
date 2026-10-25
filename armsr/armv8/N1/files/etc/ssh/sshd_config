@@ -1,0 +1,37 @@
+# sshd_config（覆盖 openssh-server 包默认配置）
+# 优化参考 flippy 的 adjust_openssh_config：
+#  - Ciphers 强制 AES-GCM 优先，利用 N1（ARMv8+crypto）的硬件加速
+#  - PermitRootLogin yes 保持与原 dropbear 一致的登录体验
+# 另：UseDNS no / ClientAlive 保活，避免空闲会话僵死
+
+Port 22
+#AddressFamily any
+#ListenAddress 0.0.0.0
+#ListenAddress ::
+
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# Ciphers and keying
+Ciphers aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+
+# Logging
+SyslogFacility AUTH
+LogLevel INFO
+
+# Authentication:
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+UseDNS no
+
+AllowTcpForwarding yes
+X11Forwarding no
+PrintMotd yes
+TCPKeepAlive yes
+ClientAliveInterval 60
+ClientAliveCountMax 3
+
+Subsystem sftp /usr/lib/ssh/sftp-server

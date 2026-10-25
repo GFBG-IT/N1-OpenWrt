@@ -5,10 +5,57 @@
 # 工作目录：openwrt 源码根目录
 # 版本号：环境变量 FW_VERSION，默认值见 workflow 的 env.FW_VERSION
 #
+# 流程：
+#   1/9 写入固件版本号        2/9 更新 feeds          3/9 调整 feeds（打补丁）
+#   4/9 引入外部组件          5/9 调整 LuCI 菜单      6/9 写入运行时优化文件
+#   7/9 应用包内补丁          8/9 重建 feed 索引      9/9 清理
+# 4/9 内部三步：4.1 并行克隆 → 4.2 落盘与特例 → 4.3 统一确定版本 → 4.4 版本号修正
+#
 
 set -euo pipefail
 
 log() { printf '[diy] %s\n' "$*"; }
+
+# 克隆第三方仓库：失败自动重试（CI 上游网络抖动是编译失败的主要来源之一）
+clone_repo() {
+    local repo="$1" dest="$2" branch="${3:-}" i
+    local args=(--depth=1 --single-branch -q)
+
+    [ -n "$branch" ] && args+=(-b "$branch")
+
+    for i in 1 2 3; do
+        rm -rf "$dest"
+        if git clone "${args[@]}" "$repo" "$dest"; then
+            return 0
+        fi
+        log "WARN: 克隆 ${repo} 失败（第 ${i}/3 次），重试 ..."
+        sleep 3
+    done
+
+    log "ERROR: 克隆 ${repo} 三次均失败"
+    return 1
+}
+
+# 后台克隆登记表：所有 clone 完成后统一 wait 并检查
+CLONE_PIDS=()
+
+clone_bg() {
+    clone_repo "$@" &
+    CLONE_PIDS+=($!)
+}
+
+wait_clones() {
+    local pid fail=0
+
+    for pid in "${CLONE_PIDS[@]}"; do
+        wait "$pid" || fail=1
+    done
+
+    if [ "$fail" -ne 0 ]; then
+        log "ERROR: 存在克隆失败的仓库，中止"
+        exit 1
+    fi
+}
 
 [ -x ./scripts/feeds ] || { log "ERROR: 请在 openwrt 源码根目录执行"; exit 1; }
 
@@ -27,7 +74,7 @@ esac
 
 # shellcheck disable=SC2016
 prefix='VERSION_NUMBER:=$(if $(VERSION_NUMBER),$(VERSION_NUMBER),'
-line="${prefix}${version})"
+line="${prefix}${version)})"
 
 grep -q "^${prefix}" include/version.mk || { log "ERROR: 找不到 VERSION_NUMBER 默认值行"; exit 1; }
 sed -i "s|^${prefix}.*)\$|${line}|" include/version.mk
@@ -45,7 +92,7 @@ log "feeds 更新完成"
 # 3/9 调整 feeds
 # ---------------------------------------------------------------------------
 log "删除 feeds 里的同名旧包"
-for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng tailscale dae daed; do
+for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng tailscale; do
     rm -rf "feeds/packages/net/${pkg}"
 done
 
@@ -65,35 +112,164 @@ else
     log "WARN: 未找到 LuCI getOnlineUsers，跳过在线用户数修复"
 fi
 
-# BusyBox top 1.3x 在 VSZ/%VSZ 后增加了 CPU 列，LuCI 旧正则解析不到进程
+# 用 /proc 直读实现替换 process_list()，不再依赖 /bin/busybox top：
+# 1) 旧实现在 rpcd 内 popen 读取 top 输出，存在时序竞态，偶发整包读到 0 字节，
+#    进程页表现为"无可用信息"（2026-10 在 N1 上实测复现并抓包定位）；
+# 2) busybox top 的 VSZ 列对 ~98-102MB 与 >=1GB 的进程显示为 "97.6m"/"1.2g"，
+#    旧正则匹配不上，这类进程会从列表里整行丢失。
 luci_sys="feeds/luci/modules/luci-base/ucode/sys.uc"
-if [ -f "$luci_sys" ] && grep -qF '+([0-9]+%) +([0-9]+%) +(.+)$' "$luci_sys"; then
+if [ -f "$luci_sys" ] && grep -q '^export function process_list() {' "$luci_sys"; then
     python3 - "$luci_sys" <<'PY'
 import sys
 
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
 
-old_re = "+([0-9]+%) +([0-9]+%) +(.+)$/"
-new_re = "+([0-9]+%) +([0-9-]+ +)?([0-9]+%) +(.+)$/"
-if old_re not in text:
-    sys.exit("process_list regex not found")
+old_import = "import { basename, readlink, readfile, open, popen, stat, glob } from 'fs';"
+new_import = "import { basename, readlink, readfile, open, popen, stat, glob, lsdir } from 'fs';"
+if old_import in text:
+    text = text.replace(old_import, new_import, 1)
+elif new_import not in text:
+    sys.exit("fs import line not found")
 
-replacements = [
-    ("if (m && m[8] != '/bin/busybox top -bn1')",
-     "if (m && m[9] != '/bin/busybox top -bn1')"),
-    ("'%CPU': m[7],", "'%CPU': m[8],"),
-    ("COMMAND: m[8]", "COMMAND: m[9]"),
-]
-for old, new in replacements:
-    if old not in text:
-        sys.exit("process_list field not found: " + old)
-    text = text.replace(old, new, 1)
+new_func = r'''export function process_list() {
+	const list = [];
+	const users = {};
+	let memtotal = 0;
 
-text = text.replace(old_re, new_re, 1)
+	for (let line in split(readfile('/etc/passwd') ?? '', '\n')) {
+		const f = split(line, ':');
+
+		if (length(f) >= 3 && f[0] != '')
+			users[f[2]] = f[0];
+	}
+
+	const mm = match(readfile('/proc/meminfo') ?? '', /MemTotal:[ \t]+([0-9]+)/);
+
+	if (mm)
+		memtotal = +mm[1];
+
+	const cpu_total = () => {
+		const cm = match(readfile('/proc/stat') ?? '', /^cpu ([0-9 ]+)/);
+		let sum = 0;
+
+		if (cm)
+			for (let v in split(trim(cm[1]), ' '))
+				sum += +v;
+
+		return sum;
+	};
+
+	const pid_ticks = (pid) => {
+		const s = readfile(`/proc/${pid}/stat`);
+
+		if (!s)
+			return null;
+
+		const m = match(s, /^([0-9]+) \(.*\) (.*)$/);
+
+		if (!m)
+			return null;
+
+		const f = split(m[2], ' ');
+
+		return (+f[11] ?? 0) + (+f[12] ?? 0);
+	};
+
+	/* 第一次采样：各进程 CPU ticks 与系统总 ticks */
+	const first = {};
+
+	for (let pid in lsdir('/proc') ?? [])
+		if (match(pid, /^[0-9]+$/)) {
+			const t = pid_ticks(pid);
+
+			if (t != null)
+				first[pid] = t;
+		}
+
+	const t0 = cpu_total();
+
+	/* 间隔一个短窗口，让 %CPU 有差分可算（busybox sleep 不支持小数，改用 uptime 忙等） */
+	const up0 = +(split(readfile('/proc/uptime'), ' ')[0]);
+	let upn = up0;
+
+	while (upn - up0 < 0.2)
+		upn = +(split(readfile('/proc/uptime'), ' ')[0]);
+
+	const dtot = (cpu_total() - t0) || 1;
+
+	/* 第二次采样：组装进程表 */
+	for (let pid in lsdir('/proc') ?? []) {
+		if (!match(pid, /^[0-9]+$/))
+			continue;
+
+		const s = readfile(`/proc/${pid}/stat`);
+
+		if (!s)
+			continue;
+
+		const m = match(s, /^([0-9]+) \((.*)\) (.*)$/);
+
+		if (!m)
+			continue;
+
+		const f = split(m[3], ' ');
+		const utime = +f[11] ?? 0;
+		const stime = +f[12] ?? 0;
+		const vsize = +f[20] ?? 0;
+		const cmdline = readfile(`/proc/${pid}/cmdline`);
+		let command = null;
+
+		if (length(cmdline)) {
+			const args = split(cmdline, uchr(0));
+
+			for (let arg in args)
+				if (length(arg))
+					command = (command == null) ? arg : command + ' ' + arg;
+		}
+
+		if (command == null)
+			command = `[${m[2]}]`;
+
+		const st = readfile(`/proc/${pid}/status`);
+		const um = st ? match(st, /Uid:\x09([0-9]+)/) : null;
+		const user = um ? (users[um[1]] ?? um[1]) : 'root';
+
+		const dcpu = (utime + stime) - (first[pid] ?? (utime + stime));
+
+		push(list, {
+			PID: pid,
+			PPID: f[1],
+			USER: user,
+			STAT: f[0],
+			VSZ: int(vsize / 1024),
+			'%MEM': (memtotal ? int((vsize / 1024) * 100 / memtotal) : 0) + '%',
+			'%CPU': (dcpu > 0 ? int(dcpu * 100 / dtot) : 0) + '%',
+			COMMAND: command
+		});
+	}
+
+	return list;
+};'''
+
+marker = "export function process_list() {"
+start = text.index(marker)
+end = text.index("\n};", start) + len("\n};")
+text = text[:start] + new_func + text[end:]
 open(path, "w", encoding="utf-8").write(text)
 PY
-    log "进程列表已兼容 BusyBox top 的 CPU 列"
+    log "process_list 已替换为 /proc 直读实现"
+else
+    log "WARN: 未找到 LuCI sys.uc 的 process_list，跳过替换"
+fi
+
+# 进程页 RPC 声明加 reject: true：调用真失败时弹错误提示（含 ubus 错误码），
+# 不再被 expect 默认值吞成空列表、显示"无可用信息"
+luci_processes="feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/processes.js"
+if [ -f "$luci_processes" ] && grep -q 'expect: { result: \[\] }' "$luci_processes" \
+    && ! grep -q 'reject: true' "$luci_processes"; then
+    sed -i 's/expect: { result: \[\] }/expect: { result: [] }, reject: true/' "$luci_processes"
+    log "进程页失败可见化（reject: true）已应用"
 fi
 
 luci_config="feeds/luci/modules/luci-base/root/etc/config/luci"
@@ -103,163 +279,92 @@ fi
 log "feeds 调整完成"
 
 # ---------------------------------------------------------------------------
-# 4/9 引入组件
+# 4/9 引入外部组件
 # ---------------------------------------------------------------------------
-# 4.1 golang
-log "引入 golang 1.27.x"
-rm -rf feeds/packages/lang/golang
-git clone --depth=1 --single-branch -b 27.x https://github.com/sbwml/packages_lang_golang clone/golang
-cp -rf clone/golang feeds/packages/lang/golang
-log "golang 引入成功"
 
-# 4.2 passwall_packages
-log "引入 passwall_packages"
+# ---- 4.1 并行克隆全部第三方仓库 --------------------------------------------
+log "并行克隆第三方仓库 ..."
+clone_bg https://github.com/sbwml/packages_lang_golang clone/golang 27.x
+clone_bg https://github.com/Openwrt-Passwall/openwrt-passwall-packages clone/passwall_packages ""
+clone_bg https://github.com/Openwrt-Passwall/openwrt-passwall2 clone/passwall2 ""
+clone_bg https://github.com/sbwml/luci-app-mosdns clone/mosdns ""
+clone_bg https://github.com/sbwml/luci-app-openlist2 clone/openlist2 ""
+clone_bg https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox ""
+clone_bg https://github.com/GuNanOvO/openwrt-tailscale clone/tailscale ""
+clone_bg https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community clone/tailscale-luci ""
+clone_bg https://github.com/nikkinikki-org/OpenWrt-nikki clone/nikki ""
+clone_bg https://github.com/nikkinikki-org/OpenWrt-momo clone/momo ""
+clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
+clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
+clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
+wait_clones
+log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
+
+# ---- 4.2 落盘与目录特例 -----------------------------------------------------
+# golang 工具链 -> feeds
+rm -rf feeds/packages/lang/golang
+cp -rf clone/golang feeds/packages/lang/golang
+
+# passwall 组件
 rm -rf package/passwall_packages
-git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall-packages clone/passwall_packages
 cp -rf clone/passwall_packages package/passwall_packages
 
-# xray-core 自动取 XTLS 最新 tag 并同步 tarball 哈希
-log "获取 xray-core 最新版本 ..."
-xray_tag="$(git ls-remote --tags --refs https://github.com/XTLS/Xray-core.git 'v*' \
-    | sed -n 's#.*refs/tags/v##p' \
-    | grep -E '^[0-9]+(\.[0-9]+)+$' \
-    | sort -V | tail -n1)"
-
-[ -n "${xray_tag}" ] || { log "ERROR: 无法获取 xray-core 版本"; exit 1; }
-
-xray_tar="$(mktemp)"
-curl -fsSL "https://codeload.github.com/XTLS/Xray-core/tar.gz/v${xray_tag}?" -o "${xray_tar}"
-xray_hash="$(sha256sum "${xray_tar}" | awk '{print $1}')"
-rm -f "${xray_tar}"
-
-[ "${#xray_hash}" -eq 64 ] || { log "ERROR: xray-core 源码下载失败"; exit 1; }
-
-sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${xray_tag}|" package/passwall_packages/xray-core/Makefile
-sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${xray_hash}|" package/passwall_packages/xray-core/Makefile
-log "xray-core 版本: ${xray_tag}"
-log "passwall_packages 引入成功"
-
-# 4.3 passwall2
-log "引入 passwall2"
 rm -rf package/passwall2
-git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall2 clone/passwall2
 cp -rf clone/passwall2 package/passwall2
 rm -rf package/passwall_packages/chinadns-ng
 # chinadns-ng 非必需：passwall2 没有它时会回退到 dnsmasq
 sed -i '/^[[:space:]]*select PACKAGE_chinadns-ng$/d' package/passwall2/luci-app-passwall2/Makefile
-log "passwall2 引入成功"
 
-# 4.4 mosdns
-log "引入 mosdns"
+# mosdns（跟随上游默认分支最新版，不再打构建补丁）
 rm -rf package/mosdns
-git clone --depth=1 --single-branch -b v5 https://github.com/sbwml/luci-app-mosdns clone/mosdns
 cp -rf clone/mosdns package/mosdns
-# 去掉调试符号，减小 mosdns 二进制
-if ! grep -q '^GO_PKG_LDFLAGS:=' package/mosdns/mosdns/Makefile; then
-    sed -i '/^GO_PKG_LDFLAGS_X:=/i GO_PKG_LDFLAGS:=-s -w' package/mosdns/mosdns/Makefile
-fi
-log "mosdns 引入成功"
 
-# 4.5 openlist2
-log "引入 openlist2"
+# openlist2（网盘挂载）
 rm -rf package/openlist2
-git clone --depth=1 --single-branch https://github.com/sbwml/luci-app-openlist2 clone/openlist2
 cp -rf clone/openlist2 package/openlist2
-log "openlist2 引入成功"
 
-# 4.6 ddnstox
-log "引入 ddnstox"
+# ddnstox（内网穿透）
 rm -rf package/ddnstox
-git clone --depth=1 --single-branch https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox
 cp -rf clone/ddnstox package/ddnstox
-log "ddnstox 引入成功"
 
-# 4.7 tailscale
-log "引入 tailscale"
+# tailscale：主程序 + LuCI
 rm -rf package/tailscale
-git clone --depth=1 --single-branch https://github.com/GuNanOvO/openwrt-tailscale clone/tailscale
 cp -rf clone/tailscale/package/tailscale package/tailscale
 # 上游 Makefile 缺少 golang/host 构建依赖
 if ! grep -q 'PKG_BUILD_DEPENDS.*golang/host' package/tailscale/Makefile; then
     sed -i '/^PKG_BUILD_DIR:=/a PKG_BUILD_DEPENDS+=golang/host' package/tailscale/Makefile
 fi
-log "tailscale 引入成功"
 
-# 4.8 tailscale LuCI
-log "引入 luci-app-tailscale-community"
 rm -rf package/luci-app-tailscale-community
-git clone --depth=1 --single-branch https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community clone/tailscale-luci
 cp -rf clone/tailscale-luci/luci-app-tailscale-community package/luci-app-tailscale-community
-log "luci-app-tailscale-community 引入成功"
 
-# 4.9 nikki（mihomo 使用稳定版 mihomo-meta，不引入 alpha）
-log "引入 nikki"
+# nikki（mihomo 使用稳定版 mihomo-meta，不引入 alpha）
 rm -rf package/nikki package/luci-app-nikki package/mihomo-meta
-git clone --depth=1 --single-branch https://github.com/nikkinikki-org/OpenWrt-nikki clone/nikki
 cp -rf clone/nikki/nikki package/nikki
 cp -rf clone/nikki/luci-app-nikki package/luci-app-nikki
 cp -rf clone/nikki/mihomo-meta package/mihomo-meta
 
-# mihomo 使用官方源码的最新稳定版（排除 alpha / rc）
-log "获取 mihomo 最新稳定版 ..."
-mihomo_tag="$(git ls-remote --tags --refs https://github.com/MetaCubeX/mihomo.git 'v*' \
-    | sed -n 's#.*refs/tags/##p' \
-    | grep -E '^v[0-9]+(\.[0-9]+)+$' \
-    | sort -V | tail -n1)"
-
-[ -n "${mihomo_tag}" ] || { log "ERROR: 无法获取 mihomo 版本"; exit 1; }
-
-mihomo_ver="${mihomo_tag#v}"
-sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${mihomo_ver}|" package/mihomo-meta/Makefile
-sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
-sed -i "s|^PKG_BUILD_VERSION:=.*$|PKG_BUILD_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
-sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/mihomo-meta/Makefile
-log "mihomo 版本: ${mihomo_tag}"
-log "nikki 引入成功"
-
-# 4.10 momo（sing-box 复用 passwall_packages）
-log "引入 momo"
+# momo（sing-box 复用 passwall_packages）
 rm -rf package/momo package/luci-app-momo
-git clone --depth=1 --single-branch https://github.com/nikkinikki-org/OpenWrt-momo clone/momo
 cp -rf clone/momo/momo package/momo
 cp -rf clone/momo/luci-app-momo package/luci-app-momo
-log "momo 引入成功"
 
-# 4.11 autocore
-log "引入 autocore"
+# autocore（CPU 信息展示）
 rm -rf feeds/packages/utils/autocore
-git clone --depth=1 --single-branch --branch openwrt-25.12 https://github.com/sbwml/autocore-arm clone/autocore
 mkdir -p feeds/packages/utils
 cp -rf clone/autocore feeds/packages/utils/autocore
-log "autocore 引入成功"
 
-# 4.12 luci-app-amlogic
-log "引入 luci-app-amlogic"
+# luci-app-amlogic（晶晨宝盒）
 rm -rf feeds/luci/applications/luci-app-amlogic
-git clone --depth=1 --single-branch https://github.com/ophub/luci-app-amlogic clone/amlogic
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
-log "luci-app-amlogic 引入成功"
 
-# 4.13 dae
-log "引入 dae"
-rm -rf package/dae feeds/luci/applications/luci-app-dae feeds/luci/applications/luci-app-daed
-git clone --depth=1 --single-branch https://github.com/QiuSimons/luci-app-dae clone/dae
-cp -rf clone/dae/dae package/dae
-cp -rf clone/dae/luci-app-dae feeds/luci/applications/luci-app-dae
-# 显式依赖 geo 数据，复用 passwall_packages 的 v2ray-geodata
-sed -i 's|^LUCI_DEPENDS:=.*$|LUCI_DEPENDS:=+dae +luci-compat +v2ray-geoip +v2ray-geosite|' \
-    feeds/luci/applications/luci-app-dae/Makefile
-log "dae 引入成功"
-
-# 4.14 argon 主题
-log "引入 argon 主题"
+# argon 主题 + 配置器
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
-git clone --depth=1 --single-branch https://github.com/jerrykuku/luci-theme-argon clone/argon
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 cp -rf clone/argon/compat/luci-app-argon-config feeds/luci/applications/
-log "argon 主题引入成功"
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon）"
 
-# 4.15 自动更新外部组件版本
+# ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
     local repo="$1"
     local glob="$2"
@@ -275,7 +380,7 @@ fetch_sha256() {
     local url="$1"
     local tmp hash
     tmp="$(mktemp)"
-    if ! curl -fsSL "$url" -o "$tmp"; then
+    if ! curl -fsSL --retry 3 --retry-all-errors "$url" -o "$tmp"; then
         rm -f "$tmp"
         return 1
     fi
@@ -284,9 +389,29 @@ fetch_sha256() {
     printf '%s\n' "$hash"
 }
 
-log "自动更新外部组件版本 ..."
+log "确定外部组件版本 ..."
 
-# openlist2：主程序 + 前端
+# xray-core：最新正式 tag（passwall2 使用）
+xray_tag="$(github_latest_tag https://github.com/XTLS/Xray-core.git 'v*' '^v[0-9]+(\.[0-9]+)+$')"
+[ -n "$xray_tag" ] || { log "ERROR: 无法获取 xray-core 版本"; exit 1; }
+xray_ver="${xray_tag#v}"
+xray_hash="$(fetch_sha256 "https://codeload.github.com/XTLS/Xray-core/tar.gz/v${xray_ver}?")"
+[ -n "$xray_hash" ] || { log "ERROR: xray-core 源码下载失败"; exit 1; }
+sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${xray_ver}|" package/passwall_packages/xray-core/Makefile
+sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${xray_hash}|" package/passwall_packages/xray-core/Makefile
+log "xray-core -> ${xray_ver}"
+
+# mihomo：最新稳定版，排除 alpha / rc（nikki 使用）
+mihomo_tag="$(github_latest_tag https://github.com/MetaCubeX/mihomo.git 'v*' '^v[0-9]+(\.[0-9]+)+$')"
+[ -n "$mihomo_tag" ] || { log "ERROR: 无法获取 mihomo 版本"; exit 1; }
+mihomo_ver="${mihomo_tag#v}"
+sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${mihomo_ver}|" package/mihomo-meta/Makefile
+sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
+sed -i "s|^PKG_BUILD_VERSION:=.*$|PKG_BUILD_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
+sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/mihomo-meta/Makefile
+log "mihomo -> ${mihomo_tag}"
+
+# openlist2：主程序 + 前端（取不到时保留仓库自带版本）
 openlist_tag="$(github_latest_tag https://github.com/OpenListTeam/OpenList.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$openlist_tag" ]; then
     openlist_ver="${openlist_tag#v}"
@@ -311,6 +436,7 @@ if [ -n "$openlist_tag" ]; then
     fi
 fi
 
+# sing-box：最新正式 tag（passwall_packages / momo 共用）
 singbox_tag="$(github_latest_tag https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$singbox_tag" ]; then
     singbox_ver="${singbox_tag#v}"
@@ -324,6 +450,7 @@ if [ -n "$singbox_tag" ]; then
     fi
 fi
 
+# geoview（geo 数据查询工具）
 geoview_tag="$(github_latest_tag https://github.com/snowie2000/geoview.git '*' '^[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$geoview_tag" ]; then
     geoview_hash="$(fetch_sha256 "https://codeload.github.com/snowie2000/geoview/tar.gz/${geoview_tag}?" || true)"
@@ -336,7 +463,7 @@ if [ -n "$geoview_tag" ]; then
     fi
 fi
 
-# tailscale（只取正式版，排除 -pre）
+# tailscale：只取正式版，排除 -pre
 tailscale_tag="$(github_latest_tag https://github.com/tailscale/tailscale.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$tailscale_tag" ]; then
     tailscale_ver="${tailscale_tag#v}"
@@ -348,15 +475,6 @@ if [ -n "$tailscale_tag" ]; then
     else
         log "WARN: tailscale 下载失败，保留原版本"
     fi
-fi
-
-# dae：跟随 olicesx/dae 的 HEAD
-dae_commit="$(git ls-remote https://github.com/olicesx/dae.git HEAD 2>/dev/null | awk '{print $1; exit}')"
-if [ -n "$dae_commit" ]; then
-    dae_ver="$(date +%Y.%m.%d)"
-    sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${dae_ver}|" package/dae/Makefile
-    sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${dae_commit}|" package/dae/Makefile
-    log "dae -> ${dae_ver} (${dae_commit:0:7})"
 fi
 
 # v2ray-geodata：passwall 包 + Loyalsoldier 最新数据
@@ -377,7 +495,7 @@ if [ -n "$geoip_tag" ] && [ -n "$geosite_tag" ]; then
 fi
 
 # ddnstox 预编译二进制
-ddnsto_html="$(curl -fsSL https://fw0.koolcenter.com/binary/ddnsto/op_custom/ 2>/dev/null || true)"
+ddnsto_html="$(curl -fsSL --retry 3 --retry-all-errors https://fw0.koolcenter.com/binary/ddnsto/op_custom/ 2>/dev/null || true)"
 ddnsto_ver="$(printf '%s' "$ddnsto_html" \
     | grep -oE 'ddnsto-custom-binary-[0-9.]+\.tar\.gz' \
     | sed 's|^ddnsto-custom-binary-||; s|\.tar\.gz$||' \
@@ -399,10 +517,10 @@ if [ -n "$tcping_commit" ]; then
     log "tcping -> ${tcping_commit:0:7}"
 fi
 
-log "mosdns 保持 5.3.4（补丁与版本绑定，跳过自动升级）"
-log "外部组件版本更新完成"
+log "mosdns 跟随上游默认分支（无本地补丁）"
+log "外部组件版本确定完成"
 
-# 4.16 修正独立 LuCI 包的版本号
+# ---- 4.4 修正独立 LuCI 包的版本号 ------------------------------------------
 # 这些包是从 git 子目录复制进来的，目录里没有 .git；luci.mk 的 findrev 会回退成 0，
 # apk 里就显示 0。显式写入 PKG_PO_VERSION（i18n 包用它）即可。
 fix_luci_po_version() {
@@ -421,7 +539,6 @@ fix_luci_po_version package/mosdns/luci-app-mosdns/Makefile
 fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
 fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
 fix_luci_po_version package/passwall2/luci-app-passwall2/Makefile
-fix_luci_po_version feeds/luci/applications/luci-app-dae/Makefile
 fix_luci_po_version feeds/luci/applications/luci-app-amlogic/Makefile
 fix_luci_po_version feeds/luci/applications/luci-app-argon-config/Makefile
 
@@ -439,8 +556,6 @@ log "LuCI 包版本修正完成"
 log "调整 LuCI 菜单分类"
 sed -i 's|admin/services/nlbw|admin/network/nlbw|g' \
     feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json
-sed -i 's|admin/services/irqbalance|admin/system/irqbalance|g' \
-    feeds/luci/applications/luci-app-irqbalance/root/usr/share/luci/menu.d/luci-app-irqbalance.json
 sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' \
     package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json
 sed -i 's|admin/vpn/tailscale|admin/network/tailscale|g' \
@@ -460,13 +575,13 @@ for name in nikki momo; do
         nikki) base="https://nikkinikki.pages.dev" ;;
         momo)  base="https://momomomo.pages.dev" ;;
     esac
-    curl -fsSL "${base}/public-key.pem" -o "files/etc/apk/keys/${name}.pem"
+    curl -fsSL --retry 3 --retry-all-errors "${base}/public-key.pem" -o "files/etc/apk/keys/${name}.pem"
     if ! grep -q 'BEGIN PUBLIC KEY' "files/etc/apk/keys/${name}.pem"; then
         log "ERROR: ${name} feed 公钥下载失败"
         exit 1
     fi
 done
-curl -fsSL "https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub" \
+curl -fsSL --retry 3 --retry-all-errors "https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub" \
     -o files/etc/apk/keys/openwrt-passwall-build.pem
 if ! grep -q 'BEGIN PUBLIC KEY' files/etc/apk/keys/openwrt-passwall-build.pem; then
     log "ERROR: passwall feed 公钥下载失败"
@@ -495,6 +610,19 @@ cat > files/etc/sysctl.d/99-zram.conf <<'EOF'
 vm.page-cluster=0
 vm.swappiness=100
 EOF
+
+cat > files/etc/uci-defaults/99-zram-size <<'EOF'
+#!/bin/sh
+# flippy 打包会把 system.zram_size_mb 置 0，S15zram 随即建立 0 字节设备失败（swap 恒为 0）
+# 恢复为 256MB：zram 空闲时几乎不占内存，仅在内存压力时作交换兜底
+if uci -q get system.@system[0] >/dev/null 2>&1; then
+	uci -q set system.@system[0].zram_size_mb='256'
+	uci -q commit system
+fi
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-zram-size
 
 cat > files/etc/uci-defaults/99-firewall-flow-offload <<'EOF'
 #!/bin/sh
@@ -621,8 +749,9 @@ chmod 755 files/etc/uci-defaults/99-mitigations-off
 
 cat > files/etc/uci-defaults/99-hold-core-packages <<'EOF'
 #!/bin/sh
-# apk 没有 hold 子命令，等价做法是把 world 里的包名改写成 名字=版本：
-# DNS/防火墙关键包固定在固件内置版本，apk upgrade 不会自动升级它们
+	# apk 没有 hold 子命令，等价做法是把 world 里的包名改写成 名字=版本：
+	# dnsmasq/防火墙关键包固定在固件内置版本，apk upgrade 不会自动升级它们
+	# mosdns 有意不固定，允许随源升级
 world=/etc/apk/world
 db=/lib/apk/db/installed
 [ -f "$world" ] && [ -f "$db" ] || exit 0
@@ -634,7 +763,7 @@ pkgver() {
 	' "$db"
 }
 
-for pkg in dnsmasq-full mosdns firewall4 luci-app-firewall; do
+for pkg in dnsmasq-full firewall4 luci-app-firewall; do
 	grep -qx "$pkg" "$world" || continue
 	ver="$(pkgver "$pkg")"
 	case "$ver" in ''|*[!A-Za-z0-9.+_~-]*) continue ;; esac
@@ -646,18 +775,16 @@ EOF
 
 chmod 755 files/etc/uci-defaults/99-hold-core-packages
 
-cat > files/etc/uci-defaults/99-dropbear-lan <<'EOF'
+cat > files/etc/uci-defaults/99-openssh-sshd-user <<'EOF'
 #!/bin/sh
-# SSH 只监听 LAN 侧
-if [ -f /etc/config/dropbear ] && uci -q get dropbear.@dropbear[0] >/dev/null 2>&1; then
-	uci -q set dropbear.@dropbear[0].Interface='lan'
-	uci -q commit dropbear
-fi
-
+# openssh privilege separation 用户兜底（包正常安装时已存在，幂等）
+grep -q '^sshd:' /etc/passwd || echo 'sshd:x:22:22:sshd:/var/run/sshd:/bin/false' >> /etc/passwd
+grep -q '^sshd:' /etc/group  || echo 'sshd:x:22:' >> /etc/group
+grep -q '^sshd:' /etc/shadow || echo 'sshd:x:0:0:99999:7:::' >> /etc/shadow
 exit 0
 EOF
 
-chmod 755 files/etc/uci-defaults/99-dropbear-lan
+chmod 755 files/etc/uci-defaults/99-openssh-sshd-user
 
 cat > files/etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers <<'EOF'
 #!/bin/sh
@@ -691,13 +818,13 @@ chmod 755 files/etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers
 log "运行时优化文件写入成功"
 
 # ---------------------------------------------------------------------------
-# 7/9 应用补丁
+# 7/9 应用包内补丁
 # ---------------------------------------------------------------------------
 sed -i '/luci-app-attendedsysupgrade/d' feeds/luci/collections/luci/Makefile
 log "补丁应用完成"
 
 # ---------------------------------------------------------------------------
-# 8/9 重建索引
+# 8/9 重建 feed 索引
 # ---------------------------------------------------------------------------
 log "重建 feed 索引 ..."
 ./scripts/feeds update -i

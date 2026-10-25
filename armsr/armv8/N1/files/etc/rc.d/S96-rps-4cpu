@@ -1,0 +1,18 @@
+#!/bin/sh
+# 覆盖 flippy S95done（ophub 打包注入）的 RPS 设置：
+# S95done 把 eth0 的 RPS 设为 0x3（收包软中断仅摊到 CPU0/1），
+# 本脚本在其后执行，改为 0xf 由 4 核分摊，降低收包积压与 RX FIFO 溢出。
+
+for q in /sys/class/net/eth0/queues/rx-*/rps_cpus; do
+	[ -w "$q" ] || continue
+
+	cur=$(cat "$q")
+	echo f > "$q" 2>/dev/null
+	new=$(cat "$q")
+
+	if [ "$new" != "$cur" ]; then
+		logger -t rps-4cpu "eth0 $(basename "$(dirname "$q")") RPS ${cur} -> ${new}"
+	fi
+done
+
+exit 0
