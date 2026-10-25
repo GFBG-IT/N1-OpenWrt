@@ -53,6 +53,54 @@ done
 if [ -f feeds/packages/utils/telegraf/Makefile ]; then
     sed -i 's|golang1\.27/host|golang/host|' feeds/packages/utils/telegraf/Makefile
 fi
+
+# N1 的 LAN 是 eth0，没有 br-lan；LuCI 的 getOnlineUsers 只统计 br-lan，导致在线用户数恒为 0
+luci_online="feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
+if [ -f "$luci_online" ]; then
+    if grep -q 'br-lan)' "$luci_online"; then
+        sed -i 's#br-lan)#br-lan|eth0|lan[0-9]*)#' "$luci_online"
+        log "在线用户数统计已兼容 eth0/lan"
+    fi
+else
+    log "WARN: 未找到 LuCI getOnlineUsers，跳过在线用户数修复"
+fi
+
+# BusyBox top 1.3x 在 VSZ/%VSZ 后增加了 CPU 列，LuCI 旧正则解析不到进程
+luci_sys="feeds/luci/modules/luci-base/ucode/sys.uc"
+if [ -f "$luci_sys" ] && grep -qF '+([0-9]+%) +([0-9]+%) +(.+)$' "$luci_sys"; then
+    python3 - "$luci_sys" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+
+old_re = "+([0-9]+%) +([0-9]+%) +(.+)$/"
+new_re = "+([0-9]+%) +([0-9-]+ +)?([0-9]+%) +(.+)$/"
+if old_re not in text:
+    sys.exit("process_list regex not found")
+
+replacements = [
+    ("if (m && m[8] != '/bin/busybox top -bn1')",
+     "if (m && m[9] != '/bin/busybox top -bn1')"),
+    ("'%CPU': m[7],", "'%CPU': m[8],"),
+    ("COMMAND: m[8]", "COMMAND: m[9]"),
+]
+for old, new in replacements:
+    if old not in text:
+        sys.exit("process_list field not found: " + old)
+    text = text.replace(old, new, 1)
+
+text = text.replace(old_re, new_re, 1)
+open(path, "w", encoding="utf-8").write(text)
+PY
+    log "进程列表已兼容 BusyBox top 的 CPU 列"
+fi
+
+# 默认语言：简体中文
+luci_config="feeds/luci/modules/luci-base/root/etc/config/luci"
+if [ -f "$luci_config" ]; then
+    sed -i "s|option lang 'auto'|option lang 'zh_cn'|" "$luci_config"
+fi
 log "feeds 调整完成"
 
 # ---------------------------------------------------------------------------
@@ -474,6 +522,15 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-mosdns-tuning
+
+cat > files/etc/uci-defaults/99-luci-lang <<'EOF'
+#!/bin/sh
+uci -q set luci.main.lang='zh_cn'
+uci -q commit luci
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-luci-lang
 
 cat > files/etc/uci-defaults/99-custom-feeds <<'EOF'
 #!/bin/sh
