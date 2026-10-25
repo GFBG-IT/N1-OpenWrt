@@ -97,6 +97,9 @@ log "引入 passwall2"
 rm -rf package/passwall2
 git clone --depth=1 --single-branch https://github.com/Openwrt-Passwall/openwrt-passwall2 clone/passwall2
 cp -rf clone/passwall2 package/passwall2
+rm -rf package/passwall_packages/chinadns-ng
+# chinadns-ng 非必需：passwall2 没有它时会回退到 dnsmasq
+sed -i '/^[[:space:]]*select PACKAGE_chinadns-ng$/d' package/passwall2/luci-app-passwall2/Makefile
 log "passwall2 引入成功"
 
 # 4.4 mosdns
@@ -209,7 +212,152 @@ cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 cp -rf clone/argon/compat/luci-app-argon-config feeds/luci/applications/
 log "argon 主题引入成功"
 
-# 4.15 修正独立 LuCI 包的版本号
+# 4.15 自动更新外部组件版本
+github_latest_tag() {
+    local repo="$1"
+    local glob="$2"
+    local regex="$3"
+    git ls-remote --tags --refs "$repo" "$glob" 2>/dev/null \
+        | sed -n 's#.*refs/tags/##p' \
+        | grep -E "$regex" \
+        | sort -V \
+        | tail -n1
+}
+
+fetch_sha256() {
+    local url="$1"
+    local tmp hash
+    tmp="$(mktemp)"
+    if ! curl -fsSL "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    hash="$(sha256sum "$tmp" | awk '{print $1}')"
+    rm -f "$tmp"
+    printf '%s\n' "$hash"
+}
+
+log "自动更新外部组件版本 ..."
+
+# openlist2：主程序 + 前端
+openlist_tag="$(github_latest_tag https://github.com/OpenListTeam/OpenList.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$openlist_tag" ]; then
+    openlist_ver="${openlist_tag#v}"
+    openlist_hash="$(fetch_sha256 "https://codeload.github.com/OpenListTeam/OpenList/tar.gz/v${openlist_ver}?" || true)"
+    if [ -n "$openlist_hash" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${openlist_ver}|" package/openlist2/openlist2/Makefile
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${openlist_hash}|" package/openlist2/openlist2/Makefile
+
+        openlist_front_ver=""
+        frontend_tag="$(github_latest_tag https://github.com/OpenListTeam/OpenList-Frontend.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+        if [ -n "$frontend_tag" ]; then
+            openlist_front_ver="${frontend_tag#v}"
+            frontend_hash="$(fetch_sha256 "https://github.com/OpenListTeam/OpenList-Frontend/releases/download/v${openlist_front_ver}/openlist-frontend-dist-lite-v${openlist_front_ver}.tar.gz" || true)"
+            if [ -n "$frontend_hash" ]; then
+                sed -i "s|^PKG_WEB_VERSION:=.*$|PKG_WEB_VERSION:=${openlist_front_ver}|" package/openlist2/openlist2/Makefile
+                sed -i "/define Download\/openlist-frontend/,/endef/ s|^  HASH:=.*$|  HASH:=${frontend_hash}|" package/openlist2/openlist2/Makefile
+            fi
+        fi
+        log "openlist2 -> ${openlist_ver} / 前端 ${openlist_front_ver:-保持原版本}"
+    else
+        log "WARN: openlist2 下载失败，保留原版本"
+    fi
+fi
+
+# sing-box
+singbox_tag="$(github_latest_tag https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$singbox_tag" ]; then
+    singbox_ver="${singbox_tag#v}"
+    singbox_hash="$(fetch_sha256 "https://codeload.github.com/SagerNet/sing-box/tar.gz/v${singbox_ver}?" || true)"
+    if [ -n "$singbox_hash" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${singbox_ver}|" package/passwall_packages/sing-box/Makefile
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${singbox_hash}|" package/passwall_packages/sing-box/Makefile
+        log "sing-box -> ${singbox_ver}"
+    else
+        log "WARN: sing-box 下载失败，保留原版本"
+    fi
+fi
+
+# geoview
+geoview_tag="$(github_latest_tag https://github.com/snowie2000/geoview.git '*' '^[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$geoview_tag" ]; then
+    geoview_hash="$(fetch_sha256 "https://codeload.github.com/snowie2000/geoview/tar.gz/${geoview_tag}?" || true)"
+    if [ -n "$geoview_hash" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${geoview_tag}|" package/passwall_packages/geoview/Makefile
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${geoview_hash}|" package/passwall_packages/geoview/Makefile
+        log "geoview -> ${geoview_tag}"
+    else
+        log "WARN: geoview 下载失败，保留原版本"
+    fi
+fi
+
+# tailscale（只取正式版，排除 -pre）
+tailscale_tag="$(github_latest_tag https://github.com/tailscale/tailscale.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$tailscale_tag" ]; then
+    tailscale_ver="${tailscale_tag#v}"
+    tailscale_hash="$(fetch_sha256 "https://codeload.github.com/tailscale/tailscale/tar.gz/v${tailscale_ver}?" || true)"
+    if [ -n "$tailscale_hash" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${tailscale_ver}|" package/tailscale/Makefile
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${tailscale_hash}|" package/tailscale/Makefile
+        log "tailscale -> ${tailscale_ver}"
+    else
+        log "WARN: tailscale 下载失败，保留原版本"
+    fi
+fi
+
+# dae：跟随 olivesx/dae 的 HEAD
+dae_commit="$(git ls-remote https://github.com/olicesx/dae.git HEAD 2>/dev/null | awk '{print $1; exit}')"
+if [ -n "$dae_commit" ]; then
+    dae_ver="$(date +%Y.%m.%d)"
+    sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${dae_ver}|" package/dae/Makefile
+    sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${dae_commit}|" package/dae/Makefile
+    log "dae -> ${dae_ver} (${dae_commit:0:7})"
+fi
+
+# v2ray-geodata：passwall 包 + Loyalsoldier 最新数据
+geoip_tag="$(github_latest_tag https://github.com/Loyalsoldier/geoip.git '*' '^[0-9]{12}$' || true)"
+geosite_tag="$(github_latest_tag https://github.com/Loyalsoldier/v2ray-rules-dat.git '*' '^[0-9]{12}$' || true)"
+if [ -n "$geoip_tag" ] && [ -n "$geosite_tag" ]; then
+    geoip_hash="$(fetch_sha256 "https://github.com/Loyalsoldier/geoip/releases/download/${geoip_tag}/geoip.dat" || true)"
+    geosite_hash="$(fetch_sha256 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${geosite_tag}/geosite.dat" || true)"
+    if [ -n "$geoip_hash" ] && [ -n "$geosite_hash" ]; then
+        sed -i "s|^GEOIP_VER:=.*$|GEOIP_VER:=${geoip_tag}|" package/passwall_packages/v2ray-geodata/Makefile
+        sed -i "s|^GEOSITE_VER:=.*$|GEOSITE_VER:=${geosite_tag}|" package/passwall_packages/v2ray-geodata/Makefile
+        sed -i "/define Download\/geoip/,/endef/ s|^  HASH:=.*$|  HASH:=${geoip_hash}|" package/passwall_packages/v2ray-geodata/Makefile
+        sed -i "/define Download\/geosite/,/endef/ s|^  HASH:=.*$|  HASH:=${geosite_hash}|" package/passwall_packages/v2ray-geodata/Makefile
+        log "v2ray-geodata -> geoip ${geoip_tag} / geosite ${geosite_tag}"
+    else
+        log "WARN: geo 数据下载失败，保留原版本"
+    fi
+fi
+
+# ddnstox 预编译二进制
+ddnsto_html="$(curl -fsSL https://fw0.koolcenter.com/binary/ddnsto/op_custom/ 2>/dev/null || true)"
+ddnsto_ver="$(printf '%s' "$ddnsto_html" \
+    | grep -oE 'ddnsto-custom-binary-[0-9.]+\.tar\.gz' \
+    | sed 's|^ddnsto-custom-binary-||; s|\.tar\.gz$||' \
+    | sort -Vu | tail -n1)"
+if [ -n "$ddnsto_ver" ]; then
+    ddnsto_hash="$(fetch_sha256 "https://fw0.koolcenter.com/binary/ddnsto/op_custom/ddnsto-custom-binary-${ddnsto_ver}.tar.gz" || true)"
+    if [ -n "$ddnsto_hash" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${ddnsto_ver}|" package/ddnstox/ddnstox/Makefile
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${ddnsto_hash}|" package/ddnstox/ddnstox/Makefile
+        log "ddnstox -> ${ddnsto_ver}"
+    fi
+fi
+
+# tcping：跟随 git HEAD
+tcping_commit="$(git ls-remote https://github.com/Lienol/tcping.git HEAD 2>/dev/null | awk '{print $1; exit}')"
+if [ -n "$tcping_commit" ]; then
+    sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${tcping_commit}|" package/passwall_packages/tcping/Makefile
+    sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/passwall_packages/tcping/Makefile
+    log "tcping -> ${tcping_commit:0:7}"
+fi
+
+log "mosdns 保持 5.3.4（补丁与版本绑定，跳过自动升级）"
+log "外部组件版本更新完成"
+
+# 4.16 修正独立 LuCI 包的版本号
 # 这些包是从 git 子目录复制进来的，目录里没有 .git；luci.mk 的 findrev 会回退成 0，
 # apk 里就显示 0。显式写入 PKG_PO_VERSION（i18n 包用它）即可。
 fix_luci_po_version() {
@@ -258,7 +406,28 @@ log "LuCI 菜单分类调整完成"
 # 6/9 写入运行时优化文件
 # ---------------------------------------------------------------------------
 log "写入运行时优化文件"
-mkdir -p files/etc/sysctl.d files/etc/uci-defaults files/etc/hotplug.d/net
+mkdir -p files/etc/sysctl.d files/etc/uci-defaults files/etc/hotplug.d/net files/etc/apk/keys
+
+# nikki / momo / passwall 第三方 apk 源：构建时写入公钥，首次开机追加仓库
+log "写入 nikki / momo / passwall feed 公钥"
+for name in nikki momo; do
+    case "$name" in
+        nikki) base="https://nikkinikki.pages.dev" ;;
+        momo)  base="https://momomomo.pages.dev" ;;
+    esac
+    curl -fsSL "${base}/public-key.pem" -o "files/etc/apk/keys/${name}.pem"
+    if ! grep -q 'BEGIN PUBLIC KEY' "files/etc/apk/keys/${name}.pem"; then
+        log "ERROR: ${name} feed 公钥下载失败"
+        exit 1
+    fi
+done
+curl -fsSL "https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub" \
+    -o files/etc/apk/keys/openwrt-passwall-build.pem
+if ! grep -q 'BEGIN PUBLIC KEY' files/etc/apk/keys/openwrt-passwall-build.pem; then
+    log "ERROR: passwall feed 公钥下载失败"
+    exit 1
+fi
+log "nikki / momo / passwall feed 公钥写入完成"
 
 cat > files/etc/sysctl.d/20-network-tuning.conf <<'EOF'
 # N1 网络性能调优：BBR 配套 fq + TCP 缓冲
@@ -305,6 +474,59 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-mosdns-tuning
+
+cat > files/etc/uci-defaults/99-custom-feeds <<'EOF'
+#!/bin/sh
+. /etc/openwrt_release
+
+case "$DISTRIB_RELEASE" in
+    *25.12*) branch="openwrt-25.12" ;;
+    *) branch="SNAPSHOT" ;;
+esac
+arch="$DISTRIB_ARCH"
+release="$(printf '%s' "$DISTRIB_RELEASE" | cut -d. -f1-2)"
+list="/etc/apk/repositories.d/customfeeds.list"
+
+mkdir -p /etc/apk/repositories.d
+touch "$list"
+
+# 原文件末尾不是换行时先补一个，避免和新行拼在一起
+if [ -s "$list" ] && [ -n "$(tail -c 1 "$list")" ]; then
+    printf '\n' >> "$list"
+fi
+
+add_feed() {
+    url="$1"
+    grep -qxF "$url" "$list" || printf '%s\n' "$url" >> "$list"
+}
+
+add_feed "https://nikkinikki.pages.dev/${branch}/${arch}/nikki/packages.adb"
+add_feed "https://momomomo.pages.dev/${branch}/${arch}/momo/packages.adb"
+add_feed "https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-${release}/${arch}/passwall_luci/packages.adb"
+add_feed "https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-${release}/${arch}/passwall_packages/packages.adb"
+add_feed "https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-${release}/${arch}/passwall2/packages.adb"
+
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-custom-feeds
+
+cat > files/etc/uci-defaults/99-distfeeds-video <<'EOF'
+#!/bin/sh
+list="/etc/apk/repositories.d/distfeeds.list"
+[ -f "$list" ] || exit 0
+
+old="https://mirror.nju.edu.cn/immortalwrt/releases/25.12-SNAPSHOT/packages/aarch64_generic/video/packages.adb"
+new="https://mirrors.ustc.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/video/packages.adb"
+
+if grep -qxF "$old" "$list"; then
+    sed -i "s|${old}|${new}|g" "$list"
+fi
+
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-distfeeds-video
 
 cat > files/etc/uci-defaults/99-mitigations-off <<'EOF'
 #!/bin/sh
