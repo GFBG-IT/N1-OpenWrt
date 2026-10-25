@@ -74,7 +74,7 @@ esac
 
 # shellcheck disable=SC2016
 prefix='VERSION_NUMBER:=$(if $(VERSION_NUMBER),$(VERSION_NUMBER),'
-line="${prefix}${version)})"
+line="${prefix}${version})"
 
 grep -q "^${prefix}" include/version.mk || { log "ERROR: 找不到 VERSION_NUMBER 默认值行"; exit 1; }
 sed -i "s|^${prefix}.*)\$|${line}|" include/version.mk
