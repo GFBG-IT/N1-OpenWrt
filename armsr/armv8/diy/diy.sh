@@ -1,22 +1,15 @@
 #!/bin/bash
 #
 # N1（斐讯 N1 / s905d）编译前准备
-# 调用位置：workflow 的 “Prepare & Install feeds” 步骤
-# 工作目录：openwrt 源码根目录
+# 调用位置：workflow 的 "Prepare & Install feeds" 步骤；工作目录：openwrt 源码根目录
 # 版本号：环境变量 FW_VERSION，默认值见 workflow 的 env.FW_VERSION
-#
-# 流程：
-#   1/9 写入固件版本号        2/9 更新 feeds          3/9 调整 feeds（打补丁）
-#   4/9 引入外部组件          5/9 调整 LuCI 菜单      6/9 写入运行时优化文件
-#   7/9 应用包内补丁          8/9 重建 feed 索引      9/9 清理
-# 4/9 内部三步：4.1 并行克隆 → 4.2 落盘与特例 → 4.3 统一确定版本 → 4.4 版本号修正
 #
 
 set -euo pipefail
 
 log() { printf '[diy] %s\n' "$*"; }
 
-# 克隆第三方仓库：失败自动重试（CI 上游网络抖动是编译失败的主要来源之一）
+# 克隆第三方仓库，失败自动重试（CI 上游网络抖动常见）
 clone_repo() {
     local repo="$1" dest="$2" branch="${3:-}" i
     local args=(--depth=1 --single-branch -q)
@@ -36,7 +29,6 @@ clone_repo() {
     return 1
 }
 
-# 后台克隆登记表：所有 clone 完成后统一 wait 并检查
 CLONE_PIDS=()
 
 clone_bg() {
@@ -112,11 +104,8 @@ else
     log "WARN: 未找到 LuCI getOnlineUsers，跳过在线用户数修复"
 fi
 
-# 用 /proc 直读实现替换 process_list()，不再依赖 /bin/busybox top：
-# 1) 旧实现在 rpcd 内 popen 读取 top 输出，存在时序竞态，偶发整包读到 0 字节，
-#    进程页表现为"无可用信息"（2026-10 在 N1 上实测复现并抓包定位）；
-# 2) busybox top 的 VSZ 列对 ~98-102MB 与 >=1GB 的进程显示为 "97.6m"/"1.2g"，
-#    旧正则匹配不上，这类进程会从列表里整行丢失。
+# process_list() 改为 /proc 直读：旧实现 popen 读 busybox top 输出有竞态（偶发
+# 进程页"无可用信息"），且其 VSZ 缩写格式（97.6m/1.2g）匹配不上会整行丢进程
 luci_sys="feeds/luci/modules/luci-base/ucode/sys.uc"
 if [ -f "$luci_sys" ] && grep -q '^export function process_list() {' "$luci_sys"; then
     python3 - "$luci_sys" <<'PY'
@@ -263,8 +252,7 @@ else
     log "WARN: 未找到 LuCI sys.uc 的 process_list，跳过替换"
 fi
 
-# 进程页 RPC 声明加 reject: true：调用真失败时弹错误提示（含 ubus 错误码），
-# 不再被 expect 默认值吞成空列表、显示"无可用信息"
+# 进程页 RPC 加 reject: true：调用失败弹错误提示，不再被 expect 默认值吞成空列表
 luci_processes="feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/processes.js"
 if [ -f "$luci_processes" ] && grep -q 'expect: { result: \[\] }' "$luci_processes" \
     && ! grep -q 'reject: true' "$luci_processes"; then
@@ -315,7 +303,7 @@ rm -rf package/passwall_packages/chinadns-ng
 # chinadns-ng 非必需：passwall2 没有它时会回退到 dnsmasq
 sed -i '/^[[:space:]]*select PACKAGE_chinadns-ng$/d' package/passwall2/luci-app-passwall2/Makefile
 
-# mosdns（跟随上游默认分支最新版，不再打构建补丁）
+# mosdns
 rm -rf package/mosdns
 cp -rf clone/mosdns package/mosdns
 
@@ -358,10 +346,8 @@ cp -rf clone/autocore feeds/packages/utils/autocore
 rm -rf feeds/luci/applications/luci-app-amlogic
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 
-# argon 主题：3.0 起设置已整合进主题包（配置文件 /etc/config/argon），
-# 不再引入 compat/ 下的旧版 luci-app-argon-config 迁移包——它与主题包含
-# 重复文件，同时打包会让 apk 报 "trying to overwrite ... owned by
-# luci-theme-argon"，全新固件只需要主题包
+# argon 3.0 起设置已整合进主题包，不再引入 compat/ 旧版 luci-app-argon-config
+# （与主题包文件冲突，apk 会报 trying to overwrite ... owned by luci-theme-argon）
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon）"
@@ -523,8 +509,8 @@ log "mosdns 跟随上游默认分支（无本地补丁）"
 log "外部组件版本确定完成"
 
 # ---- 4.4 修正独立 LuCI 包的版本号 ------------------------------------------
-# 这些包是从 git 子目录复制进来的，目录里没有 .git；luci.mk 的 findrev 会回退成 0，
-# apk 里就显示 0。显式写入 PKG_PO_VERSION（i18n 包用它）即可。
+# 这些包复制自 git 子目录、无 .git，luci.mk 的 findrev 会回退成 0；
+# 显式写入 PKG_PO_VERSION（i18n 包用它）兜底
 fix_luci_po_version() {
     makefile="$1"
     [ -f "$makefile" ] || return 0

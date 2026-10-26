@@ -98,7 +98,7 @@ jobs:
 
     - name: Verify firmware version and tuning files
       run: |
-        # 纯信息展示，无阻断项：只打印实际结果供排查，不 exit 1
+        # 纯信息展示不阻断：结果仅打印供排查
         rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz | head -n1)"
         members="$(mktemp)"
         tar -tzf "$rootfs" > "$members"
