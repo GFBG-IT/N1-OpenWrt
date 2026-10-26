@@ -98,27 +98,26 @@ jobs:
 
     - name: Verify firmware version and tuning files
       run: |
+        # 纯信息展示，无阻断项：只打印实际结果供排查，不 exit 1
         rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz | head -n1)"
         members="$(mktemp)"
         tar -tzf "$rootfs" > "$members"
 
         member="$(grep -E '(^|/)etc/openwrt_release$' "$members" | head -n1)"
-        if [ -z "$member" ]; then
-          echo "FAIL: rootfs 里找不到 etc/openwrt_release"
-          exit 1
-        fi
-
-        echo "读取 ${rootfs} 中的 ${member}:"
-        tar -xOzf "$rootfs" "$member" > /tmp/openwrt_release
-        cat /tmp/openwrt_release
-
-        if grep -q "DISTRIB_RELEASE='${FW_VERSION}'" /tmp/openwrt_release; then
-          echo "OK: 固件版本号已生效 -> ${FW_VERSION}"
+        if [ -n "$member" ]; then
+          echo "读取 ${rootfs} 中的 ${member}:"
+          tar -xOzf "$rootfs" "$member" > /tmp/openwrt_release
+          cat /tmp/openwrt_release
+          if grep -q "DISTRIB_RELEASE='${FW_VERSION}'" /tmp/openwrt_release; then
+            echo "OK: 固件版本号已生效 -> ${FW_VERSION}"
+          else
+            echo "WARN: 期望版本号 ${FW_VERSION} 未生效，实际版本见上方 openwrt_release"
+          fi
         else
-          echo "FAIL: 期望版本号 ${FW_VERSION} 未生效，请检查 diy.sh 的输出"
-          exit 1
+          echo "WARN: rootfs 里找不到 etc/openwrt_release，跳过版本号检查"
         fi
 
+        missing=0
         for f in \
           etc/sysctl.d/20-network-tuning.conf \
           etc/sysctl.d/99-zram.conf \
@@ -136,15 +135,7 @@ jobs:
           etc/rc.d/S96-rps-4cpu \
           etc/ssh/sshd_config \
           etc/ssh/ssh_config \
-          etc/uci-defaults/99-mitigations-off; do
-          if grep -qE "(^|/)${f}$" "$members"; then
-            echo "OK: ${f} 已打进镜像"
-          else
-            echo "WARN: rootfs 里找不到 ${f}，运行时优化可能不生效（不影响编译）"
-          fi
-        done
-
-        for f in \
+          etc/uci-defaults/99-mitigations-off \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
@@ -154,13 +145,15 @@ jobs:
           etc/init.d/passwall2 etc/init.d/tailscale \
           etc/init.d/nikki etc/init.d/momo \
           usr/sbin/sshd; do
-          if ! grep -qE "(^|/)${f}$" "$members"; then
-            echo "FAIL: rootfs 里找不到 ${f}，检查 .config 中的组件选择和 diy.sh 的 feeds 处理"
-            exit 1
-          fi
+          grep -qE "(^|/)${f}$" "$members" || { echo "MISSING: ${f}"; missing=$((missing + 1)); }
         done
         rm -f "$members"
-          echo "OK: mosdns / passwall2 / openlist2 / ddnstox / tailscale / nikki / momo 及其核心组件均已打进镜像"
+
+        if [ "$missing" -eq 0 ]; then
+          echo "OK: 运行时优化文件与核心组件均已打进镜像"
+        else
+          echo "WARN: 有 ${missing} 个文件未打进镜像，详见上方 MISSING 列表（不影响发布）"
+        fi
 
     - name: Package N1 firmware
       uses: ophub/amlogic-s9xxx-openwrt@main

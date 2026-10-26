@@ -358,10 +358,12 @@ cp -rf clone/autocore feeds/packages/utils/autocore
 rm -rf feeds/luci/applications/luci-app-amlogic
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 
-# argon 主题 + 配置器
+# argon 主题：3.0 起设置已整合进主题包（配置文件 /etc/config/argon），
+# 不再引入 compat/ 下的旧版 luci-app-argon-config 迁移包——它与主题包含
+# 重复文件，同时打包会让 apk 报 "trying to overwrite ... owned by
+# luci-theme-argon"，全新固件只需要主题包
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
-cp -rf clone/argon/compat/luci-app-argon-config feeds/luci/applications/
 log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
@@ -540,7 +542,6 @@ fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
 fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
 fix_luci_po_version package/passwall2/luci-app-passwall2/Makefile
 fix_luci_po_version feeds/luci/applications/luci-app-amlogic/Makefile
-fix_luci_po_version feeds/luci/applications/luci-app-argon-config/Makefile
 
 # tailscale LuCI 没有 PKG_VERSION，用源码提交日期作为版本
 tailscale_luci_ver="$(git -C clone/tailscale-luci log -1 --format=%cd --date=format:%Y.%m.%d 2>/dev/null || date +%Y.%m.%d)"
