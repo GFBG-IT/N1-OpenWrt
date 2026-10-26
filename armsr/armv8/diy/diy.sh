@@ -647,9 +647,12 @@ uci -q set mosdns.config.enabled='1'
 uci -q set mosdns.config.listen_port='53'
 uci -q set mosdns.config.listen_address='0.0.0.0'
 uci -q set mosdns.config.redirect='0'
-uci -q set mosdns.config.cache_size='20480'
+uci -q set mosdns.config.cache_size='65536'
 uci -q set mosdns.config.lazy_cache_ttl='259200'
 uci -q set mosdns.config.log_level='error'
+# 拒答 HTTPS/SVCB (Type 65) 记录：浏览器拿不到 ECH 配置即回退普通 TLS，
+# 避免国内直连外网域名时 ECH 握手被 RST；HTTP/3 仍可经 Alt-Svc 头发现
+uci -q set mosdns.config.reject_type65='1'
 uci -q commit mosdns
 
 if [ -f /etc/config/dhcp ] && uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then

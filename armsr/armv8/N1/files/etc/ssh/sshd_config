@@ -9,9 +9,8 @@ Port 22
 #ListenAddress 0.0.0.0
 #ListenAddress ::
 
-HostKey /etc/ssh/ssh_host_ed25519_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-HostKey /etc/ssh/ssh_host_rsa_key
+# HostKey 省略 = 自动加载 /etc/ssh 下已生成的全部主机密钥
+#（新版 OpenSSH 的 ssh-keygen -A 不再生成 ECDSA 密钥，显式列出会报 warning）
 
 # Ciphers and keying
 Ciphers aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
@@ -34,4 +33,7 @@ TCPKeepAlive yes
 ClientAliveInterval 60
 ClientAliveCountMax 3
 
-Subsystem sftp /usr/lib/ssh/sftp-server
+# internal-sftp 为 sshd 内置实现，不依赖外部 sftp-server 二进制：
+# ImmortalWrt 25.12 的 openssh-sftp-server 实际安装在 /usr/lib/sftp-server，
+# 各版本打包路径不一，用 internal-sftp 一劳永逸（且免每次会话 fork 开销）
+Subsystem sftp internal-sftp
