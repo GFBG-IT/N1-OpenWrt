@@ -73,6 +73,26 @@ sed -i "s|^${prefix}.*)\$|${line}|" include/version.mk
 grep -qxF "${line}" include/version.mk || { log "ERROR: 版本号写入失败"; exit 1; }
 log "固件版本号: ${version}"
 
+# 编译日期插入版本描述（%V 与 %C 之间）：ImmortalWrt 25.12.6 20261029 r0-84b665b
+# DISTRIB_RELEASE(%V)/DISTRIB_REVISION(%R) 不动，不影响 workflow 的版本号校验
+build_date="$(date +%Y%m%d)"
+
+rel_file="package/base-files/files/etc/openwrt_release"
+if [ -f "$rel_file" ] && grep -q "^DISTRIB_DESCRIPTION='%D %V %C'$" "$rel_file"; then
+    sed -i "s|^DISTRIB_DESCRIPTION='%D %V %C'$|DISTRIB_DESCRIPTION='%D %V ${build_date} %C'|" "$rel_file"
+else
+    log "WARN: openwrt_release 模板格式不符，跳过日期插入"
+fi
+
+os_file="package/base-files/files/usr/lib/os-release"
+if [ -f "$os_file" ] && grep -q '^OPENWRT_RELEASE="%D %V %C"$' "$os_file"; then
+    sed -i "s|^OPENWRT_RELEASE=\"%D %V %C\"$|OPENWRT_RELEASE=\"%D %V ${build_date} %C\"|" "$os_file"
+else
+    log "WARN: os-release 模板格式不符，跳过日期插入"
+fi
+
+log "版本描述编译日期: ${build_date}"
+
 # ---------------------------------------------------------------------------
 # 2/9 更新 feeds
 # ---------------------------------------------------------------------------
@@ -462,6 +482,23 @@ if [ -n "$tailscale_tag" ]; then
         log "tailscale -> ${tailscale_ver}"
     else
         log "WARN: tailscale 下载失败，保留原版本"
+    fi
+fi
+
+# AdGuardHome：最新正式 tag（feeds packages 自带源码包，同步版本避免过期）
+agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$agh_tag" ]; then
+    agh_ver="${agh_tag#v}"
+    agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
+    agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
+    if [ -n "$agh_hash" ] && [ -n "$agh_front_hash" ]; then
+        agh_makefile="feeds/packages/net/adguardhome/Makefile"
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
+        sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
+        log "adguardhome -> ${agh_ver}"
+    else
+        log "WARN: adguardhome 源码或前端下载失败，保留 feed 原版本"
     fi
 fi
 
