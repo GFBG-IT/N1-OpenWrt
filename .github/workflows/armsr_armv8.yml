@@ -137,7 +137,7 @@ jobs:
           etc/ssh/ssh_config \
           etc/uci-defaults/99-mitigations-off \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
-          usr/bin/AdGuardHome etc/config/adguardhome etc/init.d/adguardhome \
+          usr/bin/AdGuardHome etc/config/AdGuardHome etc/init.d/AdGuardHome \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
           usr/sbin/tailscaled usr/libexec/mihomo \

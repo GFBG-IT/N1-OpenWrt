@@ -73,9 +73,12 @@ sed -i "s|^${prefix}.*)\$|${line}|" include/version.mk
 grep -qxF "${line}" include/version.mk || { log "ERROR: 版本号写入失败"; exit 1; }
 log "固件版本号: ${version}"
 
-# 编译日期插入版本描述（%V 与 %C 之间）：ImmortalWrt 25.12.6 20261029 r0-84b665b
-# DISTRIB_RELEASE(%V)/DISTRIB_REVISION(%R) 不动，不影响 workflow 的版本号校验
-build_date="$(date +%Y%m%d)"
+# 版本描述插入源码最后提交日期：%D %V <提交日期> %C；%V/%R 不动，不影响版本号校验
+build_date="$(git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || true)"
+case "$build_date" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) log "WARN: 无法获取源码最后提交日期，回退为构建当天日期"; build_date="$(date +%Y%m%d)" ;;
+esac
 
 rel_file="package/base-files/files/etc/openwrt_release"
 if [ -f "$rel_file" ] && grep -q "^DISTRIB_DESCRIPTION='%D %V %C'$" "$rel_file"; then
@@ -305,6 +308,7 @@ clone_bg https://github.com/nikkinikki-org/OpenWrt-momo clone/momo ""
 clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
 clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
+clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -370,7 +374,23 @@ cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 # （与主题包文件冲突，apk 会报 trying to overwrite ... owned by luci-theme-argon）
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon）"
+
+# luci-app-adguardhome-tk（AdGuardHome 管理界面），核心路径指向固件编译的二进制
+rm -rf package/luci-app-adguardhome-tk
+cp -rf clone/aghluci package/luci-app-adguardhome-tk
+agh_tk_uci="package/luci-app-adguardhome-tk/root/etc/config/AdGuardHome"
+sed -i "s|option binpath '/usr/bin/AdGuardHome/AdGuardHome'|option binpath '/usr/bin/AdGuardHome'|" "$agh_tk_uci"
+sed -i "s|option configpath '/etc/AdGuardHome.yaml'|option configpath '/etc/adguardhome/adguardhome.yaml'|" "$agh_tk_uci"
+sed -i "s|option workdir '/tmp/AdGuardHome'|option workdir '/etc/adguardhome'|" "$agh_tk_uci"
+if grep -q "option binpath '/usr/bin/AdGuardHome'$" "$agh_tk_uci" \
+    && grep -q "option configpath '/etc/adguardhome/adguardhome.yaml'" "$agh_tk_uci" \
+    && grep -q "option workdir '/etc/adguardhome'" "$agh_tk_uci"; then
+    log "adguardhome-tk 路径已指向固件内置核心与持久化数据目录"
+else
+    log "ERROR: adguardhome-tk UCI 路径改造失败，请检查上游 config 文件格式"
+    exit 1
+fi
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -485,7 +505,7 @@ if [ -n "$tailscale_tag" ]; then
     fi
 fi
 
-# AdGuardHome：最新正式 tag（feeds packages 自带源码包，同步版本避免过期）
+# AdGuardHome：同步到最新正式 tag
 agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$agh_tag" ]; then
     agh_ver="${agh_tag#v}"
@@ -499,6 +519,17 @@ if [ -n "$agh_tag" ]; then
         log "adguardhome -> ${agh_ver}"
     else
         log "WARN: adguardhome 源码或前端下载失败，保留 feed 原版本"
+    fi
+fi
+
+# feeds adguardhome 包只保留编译产物，服务交给 luci-app-adguardhome-tk，避免双 init
+agh_feed_mk="feeds/packages/net/adguardhome/Makefile"
+if [ -f "$agh_feed_mk" ]; then
+    sed -i '\|./files/adguardhome.conf|d; \|./files/adguardhome.init|d; \|./files/adguardhome.defaults|d' "$agh_feed_mk"
+    if grep -q "adguardhome.init" "$agh_feed_mk"; then
+        log "WARN: feeds adguardhome init 清理未生效，固件可能存在双 init 脚本"
+    else
+        log "feeds adguardhome 已精简为纯二进制包（服务由 luci-app-adguardhome-tk 接管）"
     fi
 fi
 
