@@ -10,15 +10,18 @@ set -euo pipefail
 log() { printf '[diy] %s\n' "$*"; }
 
 # 克隆第三方仓库，失败自动重试（CI 上游网络抖动常见）
+# 第 4 参为稀疏检出目录列表（空格分隔）：只拉指定子目录，用于包数量多的大仓库
 clone_repo() {
-    local repo="$1" dest="$2" branch="${3:-}" i
+    local repo="$1" dest="$2" branch="${3:-}" sparse_dirs="${4:-}" i
     local args=(--depth=1 --single-branch -q)
 
     [ -n "$branch" ] && args+=(-b "$branch")
+    [ -n "$sparse_dirs" ] && args+=(--filter=blob:none --sparse)
 
     for i in 1 2 3; do
         rm -rf "$dest"
-        if git clone "${args[@]}" "$repo" "$dest"; then
+        if git clone "${args[@]}" "$repo" "$dest" \
+            && { [ -z "$sparse_dirs" ] || git -C "$dest" sparse-checkout set $sparse_dirs; }; then
             return 0
         fi
         log "WARN: 克隆 ${repo} 失败（第 ${i}/3 次），重试 ..."
@@ -309,6 +312,7 @@ clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
 clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
 clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
+clone_bg https://github.com/kenzok8/openwrt-packages clone/kenzok8 "" "ddns-go luci-app-ddns-go"
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -378,7 +382,12 @@ cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 # luci-app-adguardhome-tk（AdGuardHome 管理界面，核心由 app 运行时下载）
 rm -rf package/luci-app-adguardhome-tk
 cp -rf clone/aghluci package/luci-app-adguardhome-tk
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
+
+# ddns-go + luci-app-ddns-go（DDNS 客户端，稀疏检出 kenzok8 仓库的两个包）
+rm -rf package/ddns-go package/luci-app-ddns-go
+cp -rf clone/kenzok8/ddns-go package/ddns-go
+cp -rf clone/kenzok8/luci-app-ddns-go package/luci-app-ddns-go
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon / adguardhome-tk / ddns-go）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -490,6 +499,20 @@ if [ -n "$tailscale_tag" ]; then
         log "tailscale -> ${tailscale_ver}"
     else
         log "WARN: tailscale 下载失败，保留原版本"
+    fi
+fi
+
+# ddns-go：最新正式 tag
+ddnsgo_tag="$(github_latest_tag https://github.com/jeessy2/ddns-go.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$ddnsgo_tag" ]; then
+    ddnsgo_ver="${ddnsgo_tag#v}"
+    ddnsgo_hash="$(fetch_sha256 "https://codeload.github.com/jeessy2/ddns-go/tar.gz/v${ddnsgo_ver}?" || true)"
+    if [ -n "$ddnsgo_hash" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${ddnsgo_ver}|" package/ddns-go/Makefile
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${ddnsgo_hash}|" package/ddns-go/Makefile
+        log "ddns-go -> ${ddnsgo_ver}"
+    else
+        log "WARN: ddns-go 源码下载失败，保留仓库原版本"
     fi
 fi
 
