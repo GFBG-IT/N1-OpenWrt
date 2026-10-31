@@ -375,21 +375,9 @@ cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 
-# luci-app-adguardhome-tk（AdGuardHome 管理界面），核心路径指向固件编译的二进制
+# luci-app-adguardhome-tk（AdGuardHome 管理界面，核心由 app 运行时下载）
 rm -rf package/luci-app-adguardhome-tk
 cp -rf clone/aghluci package/luci-app-adguardhome-tk
-agh_tk_uci="package/luci-app-adguardhome-tk/root/etc/config/AdGuardHome"
-sed -i "s|option binpath '/usr/bin/AdGuardHome/AdGuardHome'|option binpath '/usr/bin/AdGuardHome'|" "$agh_tk_uci"
-sed -i "s|option configpath '/etc/AdGuardHome.yaml'|option configpath '/etc/adguardhome/adguardhome.yaml'|" "$agh_tk_uci"
-sed -i "s|option workdir '/tmp/AdGuardHome'|option workdir '/etc/adguardhome'|" "$agh_tk_uci"
-if grep -q "option binpath '/usr/bin/AdGuardHome'$" "$agh_tk_uci" \
-    && grep -q "option configpath '/etc/adguardhome/adguardhome.yaml'" "$agh_tk_uci" \
-    && grep -q "option workdir '/etc/adguardhome'" "$agh_tk_uci"; then
-    log "adguardhome-tk 路径已指向固件内置核心与持久化数据目录"
-else
-    log "ERROR: adguardhome-tk UCI 路径改造失败，请检查上游 config 文件格式"
-    exit 1
-fi
 log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
@@ -502,34 +490,6 @@ if [ -n "$tailscale_tag" ]; then
         log "tailscale -> ${tailscale_ver}"
     else
         log "WARN: tailscale 下载失败，保留原版本"
-    fi
-fi
-
-# AdGuardHome：同步到最新正式 tag
-agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$agh_tag" ]; then
-    agh_ver="${agh_tag#v}"
-    agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
-    agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
-    if [ -n "$agh_hash" ] && [ -n "$agh_front_hash" ]; then
-        agh_makefile="feeds/packages/net/adguardhome/Makefile"
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
-        sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
-        log "adguardhome -> ${agh_ver}"
-    else
-        log "WARN: adguardhome 源码或前端下载失败，保留 feed 原版本"
-    fi
-fi
-
-# feeds adguardhome 包只保留编译产物，服务交给 luci-app-adguardhome-tk，避免双 init
-agh_feed_mk="feeds/packages/net/adguardhome/Makefile"
-if [ -f "$agh_feed_mk" ]; then
-    sed -i '\|./files/adguardhome.conf|d; \|./files/adguardhome.init|d; \|./files/adguardhome.defaults|d' "$agh_feed_mk"
-    if grep -q "adguardhome.init" "$agh_feed_mk"; then
-        log "WARN: feeds adguardhome init 清理未生效，固件可能存在双 init 脚本"
-    else
-        log "feeds adguardhome 已精简为纯二进制包（服务由 luci-app-adguardhome-tk 接管）"
     fi
 fi
 
