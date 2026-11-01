@@ -379,9 +379,22 @@ cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 
-# luci-app-adguardhome-tk（AdGuardHome 管理界面，核心由 app 运行时下载）
+# luci-app-adguardhome-tk（AdGuardHome 管理界面），路径对齐实机：
+# 核心 /usr/bin/AdGuardHome，配置 /etc/adguardhome/adguardhome.yaml，工作目录 /etc/adguardhome
 rm -rf package/luci-app-adguardhome-tk
 cp -rf clone/aghluci package/luci-app-adguardhome-tk
+agh_tk_uci="package/luci-app-adguardhome-tk/root/etc/config/AdGuardHome"
+sed -i "s|option binpath '/usr/bin/AdGuardHome/AdGuardHome'|option binpath '/usr/bin/AdGuardHome'|" "$agh_tk_uci"
+sed -i "s|option configpath '/etc/AdGuardHome.yaml'|option configpath '/etc/adguardhome/adguardhome.yaml'|" "$agh_tk_uci"
+sed -i "s|option workdir '/tmp/AdGuardHome'|option workdir '/etc/adguardhome'|" "$agh_tk_uci"
+if grep -q "option binpath '/usr/bin/AdGuardHome'$" "$agh_tk_uci" \
+    && grep -q "option configpath '/etc/adguardhome/adguardhome.yaml'" "$agh_tk_uci" \
+    && grep -q "option workdir '/etc/adguardhome'" "$agh_tk_uci"; then
+    log "adguardhome-tk 路径已对齐：核心 /usr/bin/AdGuardHome，配置与数据 /etc/adguardhome"
+else
+    log "ERROR: adguardhome-tk UCI 路径改造失败，请检查上游 config 文件格式"
+    exit 1
+fi
 
 # ddns-go + luci-app-ddns-go（DDNS 客户端，稀疏检出 kenzok8 仓库的两个包）
 rm -rf package/ddns-go package/luci-app-ddns-go
@@ -516,6 +529,34 @@ if [ -n "$ddnsgo_tag" ]; then
     fi
 fi
 
+# AdGuardHome：最新正式 tag
+agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$agh_tag" ]; then
+    agh_ver="${agh_tag#v}"
+    agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
+    agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
+    agh_makefile="feeds/packages/net/adguardhome/Makefile"
+    if [ -n "$agh_hash" ] && [ -n "$agh_front_hash" ] && [ -f "$agh_makefile" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
+        sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
+        log "adguardhome -> ${agh_ver}"
+    else
+        log "WARN: adguardhome 源码或前端下载失败，保留 feed 原版本"
+    fi
+fi
+
+# feeds adguardhome 包只保留编译产物（/usr/bin/AdGuardHome），服务交给 luci-app-adguardhome-tk，避免双 init
+agh_feed_mk="feeds/packages/net/adguardhome/Makefile"
+if [ -f "$agh_feed_mk" ]; then
+    sed -i '\|./files/adguardhome.conf|d; \|./files/adguardhome.init|d; \|./files/adguardhome.defaults|d' "$agh_feed_mk"
+    if grep -q "adguardhome.init" "$agh_feed_mk"; then
+        log "WARN: feeds adguardhome init 清理未生效，固件可能存在双 init 脚本"
+    else
+        log "feeds adguardhome 已精简为纯二进制包（服务由 luci-app-adguardhome-tk 接管）"
+    fi
+fi
+
 # v2ray-geodata：passwall 包 + Loyalsoldier 最新数据
 geoip_tag="$(github_latest_tag https://github.com/Loyalsoldier/geoip.git '*' '^[0-9]{12}$' || true)"
 geosite_tag="$(github_latest_tag https://github.com/Loyalsoldier/v2ray-rules-dat.git '*' '^[0-9]{12}$' || true)"
@@ -556,7 +597,6 @@ if [ -n "$tcping_commit" ]; then
     log "tcping -> ${tcping_commit:0:7}"
 fi
 
-log "mosdns 跟随上游默认分支（无本地补丁）"
 log "外部组件版本确定完成"
 
 # ---- 4.4 修正独立 LuCI 包的版本号 ------------------------------------------
@@ -592,12 +632,18 @@ log "LuCI 包版本修正完成"
 # 5/9 调整 LuCI 菜单分类
 # ---------------------------------------------------------------------------
 log "调整 LuCI 菜单分类"
-sed -i 's|admin/services/nlbw|admin/network/nlbw|g' \
-    feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json
-sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' \
-    package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json
-sed -i 's|admin/vpn/tailscale|admin/network/tailscale|g' \
-    package/luci-app-tailscale-community/root/usr/share/luci/menu.d/luci-app-tailscale-community.json
+nlbw_menu="feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json"
+if [ -f "$nlbw_menu" ]; then
+    sed -i 's|admin/services/nlbw|admin/network/nlbw|g' "$nlbw_menu"
+fi
+openlist2_menu="package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json"
+if [ -f "$openlist2_menu" ]; then
+    sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' "$openlist2_menu"
+fi
+tailscale_menu="package/luci-app-tailscale-community/root/usr/share/luci/menu.d/luci-app-tailscale-community.json"
+if [ -f "$tailscale_menu" ]; then
+    sed -i 's|admin/vpn/tailscale|admin/network/tailscale|g' "$tailscale_menu"
+fi
 log "LuCI 菜单分类调整完成"
 
 # ---------------------------------------------------------------------------
@@ -606,7 +652,7 @@ log "LuCI 菜单分类调整完成"
 log "写入运行时优化文件"
 mkdir -p files/etc/sysctl.d files/etc/uci-defaults files/etc/hotplug.d/net files/etc/apk/keys
 
-# nikki / momo / passwall 第三方 apk 源：构建时写入公钥，首次开机追加仓库
+# nikki / momo / passwall 第三方 apk 源公钥，首次开机由 uci-defaults 追加仓库
 log "写入 nikki / momo / passwall feed 公钥"
 for name in nikki momo; do
     case "$name" in
@@ -678,23 +724,48 @@ chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
 
 cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
 #!/bin/sh
-# DNS 架构：dnsmasq 只保留 DHCP（port 0 关闭 DNS 监听），解析全部由 mosdns 监听 53 端口承担
+# DNS 架构（与 192.168.5.3 实机配置一致）：dnsmasq 仅保留 DHCP（port 0），
+# AdGuardHome 占 53 做过滤，mosdns 在 5335 作为 AGH 的分流上游
+# 不固化：自定义规则列表、国内/远程 DNS 服务器、ECS 等隐私项
 [ -f /etc/config/mosdns ] || exit 0
 
 uci -q set mosdns.config.enabled='1'
-uci -q set mosdns.config.listen_port='53'
+uci -q set mosdns.config.listen_port='5335'
 uci -q set mosdns.config.listen_address='0.0.0.0'
-uci -q set mosdns.config.redirect='0'
-uci -q set mosdns.config.cache_size='65536'
-uci -q set mosdns.config.lazy_cache_ttl='259200'
+uci -q set mosdns.config.configfile='/var/etc/mosdns.json'
 uci -q set mosdns.config.log_level='error'
-# 拒答 HTTPS/SVCB (Type 65) 记录：浏览器拿不到 ECH 配置即回退普通 TLS，
-# 避免国内直连外网域名时 ECH 握手被 RST；HTTP/3 仍可经 Alt-Svc 头发现
+uci -q set mosdns.config.log_file='/var/log/mosdns.log'
+uci -q set mosdns.config.log_size='5'
+uci -q set mosdns.config.concurrent='2'
+uci -q set mosdns.config.idle_timeout='30'
+uci -q set mosdns.config.enable_pipeline='1'
+uci -q set mosdns.config.insecure_skip_verify='0'
+uci -q set mosdns.config.prefer_ipv4='1'
+uci -q set mosdns.config.dns_leak='1'
+uci -q set mosdns.config.enable_ecs_remote='1'
+uci -q set mosdns.config.stats_collector='0'
+uci -q set mosdns.config.apple_optimization='1'
 uci -q set mosdns.config.reject_type65='1'
+uci -q set mosdns.config.cache='0'
+uci -q set mosdns.config.minimal_ttl='0'
+uci -q set mosdns.config.maximum_ttl='0'
+uci -q set mosdns.config.geo_auto_update='0'
+uci -q set mosdns.config.geo_update_week_time='*'
+uci -q set mosdns.config.geo_update_day_time='2'
+uci -q set mosdns.config.geoip_type='geoip-only-cn-private'
+uci -q set mosdns.config.listen_port_api='9091'
+uci -q set mosdns.config.cloudflare='0'
 uci -q commit mosdns
 
+# dnsmasq 结构参数：DNS 监听关闭，缓存交给上游 AdGuardHome/mosdns
 if [ -f /etc/config/dhcp ] && uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
 	uci -q set dhcp.@dnsmasq[0].port='0'
+	uci -q set dhcp.@dnsmasq[0].cachesize='0'
+	uci -q set dhcp.@dnsmasq[0].use_stale_cache='3600'
+	uci -q set dhcp.@dnsmasq[0].nonegcache='1'
+	uci -q set dhcp.@dnsmasq[0].rebind_protection='0'
+	uci -q set dhcp.@dnsmasq[0].ednspacket_max='1232'
+	uci -q set dhcp.@dnsmasq[0].dns_redirect='0'
 	uci -q commit dhcp
 fi
 
@@ -861,7 +932,10 @@ log "运行时优化文件写入成功"
 # ---------------------------------------------------------------------------
 # 7/9 应用包内补丁
 # ---------------------------------------------------------------------------
-sed -i '/luci-app-attendedsysupgrade/d' feeds/luci/collections/luci/Makefile
+luci_coll="feeds/luci/collections/luci/Makefile"
+if [ -f "$luci_coll" ]; then
+    sed -i '/luci-app-attendedsysupgrade/d' "$luci_coll"
+fi
 log "补丁应用完成"
 
 # ---------------------------------------------------------------------------

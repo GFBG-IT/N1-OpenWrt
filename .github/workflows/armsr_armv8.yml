@@ -88,7 +88,7 @@ jobs:
       working-directory: ./openwrt
       run: |
         make defconfig
-        grep -E '^CONFIG_(TARGET_OPTIONS|TARGET_OPTIMIZATION)=' .config
+        grep -E '^CONFIG_(TARGET_OPTIONS|TARGET_OPTIMIZATION)=' .config || true
         make download -j$(( $(nproc) * 2 ))
 
     - name: Compile N1 firmware
@@ -98,17 +98,27 @@ jobs:
 
     - name: Verify firmware version and tuning files
       run: |
-        # 纯信息展示不阻断：结果仅打印供排查
-        rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz | head -n1)"
+        # 纯信息展示步骤：关闭 errexit/pipefail，任何异常只打印 WARN，绝不阻断发布
+        set +e
+        set +o pipefail
+        rootfs="$(ls openwrt/bin/targets/armsr/armv8/*rootfs.tar.gz 2>/dev/null | head -n1)"
+        if [ -z "$rootfs" ]; then
+          echo "WARN: 未找到 rootfs.tar.gz，跳过校验"
+          exit 0
+        fi
         members="$(mktemp)"
-        tar -tzf "$rootfs" > "$members"
+        if ! tar -tzf "$rootfs" > "$members" 2>/dev/null; then
+          echo "WARN: rootfs tar 读取失败，跳过校验"
+          rm -f "$members"
+          exit 0
+        fi
 
         member="$(grep -E '(^|/)etc/openwrt_release$' "$members" | head -n1)"
         if [ -n "$member" ]; then
           echo "读取 ${rootfs} 中的 ${member}:"
-          tar -xOzf "$rootfs" "$member" > /tmp/openwrt_release
-          cat /tmp/openwrt_release
-          if grep -q "DISTRIB_RELEASE='${FW_VERSION}'" /tmp/openwrt_release; then
+          tar -xOzf "$rootfs" "$member" > /tmp/openwrt_release 2>/dev/null
+          cat /tmp/openwrt_release 2>/dev/null
+          if grep -q "DISTRIB_RELEASE='${FW_VERSION}'" /tmp/openwrt_release 2>/dev/null; then
             echo "OK: 固件版本号已生效 -> ${FW_VERSION}"
           else
             echo "WARN: 期望版本号 ${FW_VERSION} 未生效，实际版本见上方 openwrt_release"
@@ -137,7 +147,7 @@ jobs:
           etc/ssh/ssh_config \
           etc/uci-defaults/99-mitigations-off \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
-          etc/config/AdGuardHome etc/init.d/AdGuardHome \
+          usr/bin/AdGuardHome etc/config/AdGuardHome etc/init.d/AdGuardHome \
           usr/bin/ddns-go etc/config/ddns-go etc/init.d/ddns-go \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
