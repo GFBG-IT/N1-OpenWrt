@@ -9,8 +9,7 @@ set -euo pipefail
 
 log() { printf '[diy] %s\n' "$*"; }
 
-# 克隆第三方仓库，失败自动重试（CI 上游网络抖动常见）
-# 第 4 参为稀疏检出目录列表（空格分隔）：只拉指定子目录，用于包数量多的大仓库
+# 克隆第三方仓库，失败重试 3 次；第 4 参为稀疏检出目录列表（空格分隔，用于包多的大仓库）
 clone_repo() {
     local repo="$1" dest="$2" branch="${3:-}" sparse_dirs="${4:-}" i
     local args=(--depth=1 --single-branch -q)
@@ -110,16 +109,23 @@ log "feeds 更新完成"
 # 3/9 调整 feeds
 # ---------------------------------------------------------------------------
 log "删除 feeds 里的同名旧包"
-for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng tailscale; do
+for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng; do
     rm -rf "feeds/packages/net/${pkg}"
 done
+
+# ddns-scripts 服务商定义只保留 Cloudflare（用户指定），其余服务商移除
+ddns_svcdir="feeds/packages/net/ddns-scripts/files/usr/share/ddns/default"
+if [ -d "$ddns_svcdir" ]; then
+    find "$ddns_svcdir" -maxdepth 1 -type f ! -iname '*cloudflare*' -delete
+    log "ddns-scripts 服务商定义已精简为 Cloudflare"
+fi
 
 # telegraf 未选中；把版本化 Go 依赖改成 golang/host，避免编译日志 warning
 if [ -f feeds/packages/utils/telegraf/Makefile ]; then
     sed -i 's|golang1\.27/host|golang/host|' feeds/packages/utils/telegraf/Makefile
 fi
 
-# N1 的 LAN 是 eth0，没有 br-lan；LuCI 的 getOnlineUsers 只统计 br-lan，导致在线用户数恒为 0
+# LuCI 在线用户数只统计 br-lan，N1 的 LAN 是 eth0，导致统计恒为 0
 luci_online="feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
 if [ -f "$luci_online" ]; then
     if grep -q 'br-lan)' "$luci_online"; then
@@ -130,8 +136,7 @@ else
     log "WARN: 未找到 LuCI getOnlineUsers，跳过在线用户数修复"
 fi
 
-# process_list() 改为 /proc 直读：旧实现 popen 读 busybox top 输出有竞态（偶发
-# 进程页"无可用信息"），且其 VSZ 缩写格式（97.6m/1.2g）匹配不上会整行丢进程
+# process_list() 旧实现 popen 读 busybox top 有竞态且 VSZ 缩写丢进程，改为 /proc 直读
 luci_sys="feeds/luci/modules/luci-base/ucode/sys.uc"
 if [ -f "$luci_sys" ] && grep -q '^export function process_list() {' "$luci_sys"; then
     python3 - "$luci_sys" <<'PY'
@@ -304,15 +309,12 @@ clone_bg https://github.com/Openwrt-Passwall/openwrt-passwall2 clone/passwall2 "
 clone_bg https://github.com/sbwml/luci-app-mosdns clone/mosdns ""
 clone_bg https://github.com/sbwml/luci-app-openlist2 clone/openlist2 ""
 clone_bg https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox ""
-clone_bg https://github.com/GuNanOvO/openwrt-tailscale clone/tailscale ""
-clone_bg https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community clone/tailscale-luci ""
 clone_bg https://github.com/nikkinikki-org/OpenWrt-nikki clone/nikki ""
 clone_bg https://github.com/nikkinikki-org/OpenWrt-momo clone/momo ""
 clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
 clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
 clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
-clone_bg https://github.com/kenzok8/openwrt-packages clone/kenzok8 "" "ddns-go luci-app-ddns-go"
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -343,17 +345,6 @@ cp -rf clone/openlist2 package/openlist2
 rm -rf package/ddnstox
 cp -rf clone/ddnstox package/ddnstox
 
-# tailscale：主程序 + LuCI
-rm -rf package/tailscale
-cp -rf clone/tailscale/package/tailscale package/tailscale
-# 上游 Makefile 缺少 golang/host 构建依赖
-if ! grep -q 'PKG_BUILD_DEPENDS.*golang/host' package/tailscale/Makefile; then
-    sed -i '/^PKG_BUILD_DIR:=/a PKG_BUILD_DEPENDS+=golang/host' package/tailscale/Makefile
-fi
-
-rm -rf package/luci-app-tailscale-community
-cp -rf clone/tailscale-luci/luci-app-tailscale-community package/luci-app-tailscale-community
-
 # nikki（mihomo 使用稳定版 mihomo-meta，不引入 alpha）
 rm -rf package/nikki package/luci-app-nikki package/mihomo-meta
 cp -rf clone/nikki/nikki package/nikki
@@ -374,13 +365,11 @@ cp -rf clone/autocore feeds/packages/utils/autocore
 rm -rf feeds/luci/applications/luci-app-amlogic
 cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
 
-# argon 3.0 起设置已整合进主题包，不再引入 compat/ 旧版 luci-app-argon-config
-# （与主题包文件冲突，apk 会报 trying to overwrite ... owned by luci-theme-argon）
+# argon 3.0 已内置设置，不再引入旧版 argon-config（与主题包文件冲突）
 rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
 cp -rf clone/argon feeds/luci/themes/luci-theme-argon
 
-# luci-app-adguardhome-tk（AdGuardHome 管理界面），路径对齐实机：
-# 核心 /usr/bin/AdGuardHome，配置 /etc/adguardhome/adguardhome.yaml，工作目录 /etc/adguardhome
+# luci-app-adguardhome-tk：路径对齐实机（核心 /usr/bin/AdGuardHome，配置/数据 /etc/adguardhome）
 rm -rf package/luci-app-adguardhome-tk
 cp -rf clone/aghluci package/luci-app-adguardhome-tk
 agh_tk_uci="package/luci-app-adguardhome-tk/root/etc/config/AdGuardHome"
@@ -395,12 +384,13 @@ else
     log "ERROR: adguardhome-tk UCI 路径改造失败，请检查上游 config 文件格式"
     exit 1
 fi
+# keep.d 只保留配置文件：核心随固件升级更新，防止保留配置升级时旧二进制覆盖新编译版
+agh_tk_init="package/luci-app-adguardhome-tk/root/etc/init.d/AdGuardHome"
+if [ -f "$agh_tk_init" ] && grep -qF '"$binpath" "$configpath"' "$agh_tk_init"; then
+    sed -i 's|"\$binpath" "\$configpath"|"\$configpath"|' "$agh_tk_init"
+fi
 
-# ddns-go + luci-app-ddns-go（DDNS 客户端，稀疏检出 kenzok8 仓库的两个包）
-rm -rf package/ddns-go package/luci-app-ddns-go
-cp -rf clone/kenzok8/ddns-go package/ddns-go
-cp -rf clone/kenzok8/luci-app-ddns-go package/luci-app-ddns-go
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / tailscale×2 / nikki / momo / autocore / amlogic / argon / adguardhome-tk / ddns-go）"
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -501,49 +491,31 @@ if [ -n "$geoview_tag" ]; then
     fi
 fi
 
-# tailscale：只取正式版，排除 -pre
-tailscale_tag="$(github_latest_tag https://github.com/tailscale/tailscale.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$tailscale_tag" ]; then
-    tailscale_ver="${tailscale_tag#v}"
-    tailscale_hash="$(fetch_sha256 "https://codeload.github.com/tailscale/tailscale/tar.gz/v${tailscale_ver}?" || true)"
-    if [ -n "$tailscale_hash" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${tailscale_ver}|" package/tailscale/Makefile
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${tailscale_hash}|" package/tailscale/Makefile
-        log "tailscale -> ${tailscale_ver}"
-    else
-        log "WARN: tailscale 下载失败，保留原版本"
-    fi
-fi
-
-# ddns-go：最新正式 tag
-ddnsgo_tag="$(github_latest_tag https://github.com/jeessy2/ddns-go.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$ddnsgo_tag" ]; then
-    ddnsgo_ver="${ddnsgo_tag#v}"
-    ddnsgo_hash="$(fetch_sha256 "https://codeload.github.com/jeessy2/ddns-go/tar.gz/v${ddnsgo_ver}?" || true)"
-    if [ -n "$ddnsgo_hash" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${ddnsgo_ver}|" package/ddns-go/Makefile
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${ddnsgo_hash}|" package/ddns-go/Makefile
-        log "ddns-go -> ${ddnsgo_ver}"
-    else
-        log "WARN: ddns-go 源码下载失败，保留仓库原版本"
-    fi
-fi
-
-# AdGuardHome：最新正式 tag
-agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$agh_tag" ]; then
+# AdGuardHome：最新正式 tag，重试 3 次；耗尽后回退 feed 自带版本，不阻断编译
+agh_makefile="feeds/packages/net/adguardhome/Makefile"
+[ -f "$agh_makefile" ] || { log "ERROR: 找不到 feeds adguardhome 包"; exit 1; }
+agh_ok=""
+for i in 1 2 3; do
+    agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+    [ -n "$agh_tag" ] || { log "WARN: 第 ${i}/3 次获取 AdGuardHome 版本失败"; sleep 3; continue; }
     agh_ver="${agh_tag#v}"
     agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
+    [ -n "$agh_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 源码校验失败"; sleep 3; continue; }
     agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
-    agh_makefile="feeds/packages/net/adguardhome/Makefile"
-    if [ -n "$agh_hash" ] && [ -n "$agh_front_hash" ] && [ -f "$agh_makefile" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
-        sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
-        log "adguardhome -> ${agh_ver}"
-    else
-        log "WARN: adguardhome 源码或前端下载失败，保留 feed 原版本"
+    [ -n "$agh_front_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 前端校验失败"; sleep 3; continue; }
+    agh_ok=1
+    break
+done
+if [ -n "$agh_ok" ]; then
+    sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
+    sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
+    sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
+    log "adguardhome -> ${agh_ver}"
+    if [ -n "${GITHUB_ENV:-}" ]; then
+        echo "AGH_VERSION=${agh_ver}" >> "$GITHUB_ENV"
     fi
+else
+    log "WARN: AdGuardHome 重试 3 次均失败，回退 feed 自带版本编译"
 fi
 
 # feeds adguardhome 包只保留编译产物（/usr/bin/AdGuardHome），服务交给 luci-app-adguardhome-tk，避免双 init
@@ -600,8 +572,7 @@ fi
 log "外部组件版本确定完成"
 
 # ---- 4.4 修正独立 LuCI 包的版本号 ------------------------------------------
-# 这些包复制自 git 子目录、无 .git，luci.mk 的 findrev 会回退成 0；
-# 显式写入 PKG_PO_VERSION（i18n 包用它）兜底
+# 复制自 git 子目录的包无 .git，luci.mk findrev 回退 0，显式写入 PKG_PO_VERSION 兜底
 fix_luci_po_version() {
     makefile="$1"
     [ -f "$makefile" ] || return 0
@@ -619,13 +590,6 @@ fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
 fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
 fix_luci_po_version package/passwall2/luci-app-passwall2/Makefile
 fix_luci_po_version feeds/luci/applications/luci-app-amlogic/Makefile
-
-# tailscale LuCI 没有 PKG_VERSION，用源码提交日期作为版本
-tailscale_luci_ver="$(git -C clone/tailscale-luci log -1 --format=%cd --date=format:%Y.%m.%d 2>/dev/null || date +%Y.%m.%d)"
-[ -n "$tailscale_luci_ver" ] || tailscale_luci_ver="$(date +%Y.%m.%d)"
-if ! grep -q '^PKG_VERSION:=' package/luci-app-tailscale-community/Makefile; then
-    sed -i "/^LUCI_TITLE:=/i PKG_VERSION:=${tailscale_luci_ver}\nPKG_PO_VERSION:=${tailscale_luci_ver}" package/luci-app-tailscale-community/Makefile
-fi
 log "LuCI 包版本修正完成"
 
 # ---------------------------------------------------------------------------
@@ -639,10 +603,6 @@ fi
 openlist2_menu="package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json"
 if [ -f "$openlist2_menu" ]; then
     sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' "$openlist2_menu"
-fi
-tailscale_menu="package/luci-app-tailscale-community/root/usr/share/luci/menu.d/luci-app-tailscale-community.json"
-if [ -f "$tailscale_menu" ]; then
-    sed -i 's|admin/vpn/tailscale|admin/network/tailscale|g' "$tailscale_menu"
 fi
 log "LuCI 菜单分类调整完成"
 
@@ -684,6 +644,7 @@ net.ipv4.tcp_wmem=4096 65536 8388608
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
 net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_max_syn_backlog=8192
 net.netfilter.nf_conntrack_max=262144
 net.netfilter.nf_conntrack_buckets=65536
 net.netfilter.nf_conntrack_tcp_max_retrans=5
@@ -722,11 +683,28 @@ EOF
 
 chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
 
+cat > files/etc/uci-defaults/99-wireguard-allow <<'EOF'
+#!/bin/sh
+# 放行 WireGuard 监听端口入站（wan6 归入 wan 区域，默认拒绝入站）
+[ -f /etc/config/firewall ] || exit 0
+if ! uci -q get firewall.wg_allow >/dev/null; then
+	uci add firewall rule >/dev/null
+	uci set firewall.@rule[-1].name='Allow-WireGuard'
+	uci set firewall.@rule[-1].src='wan'
+	uci set firewall.@rule[-1].proto='udp'
+	uci set firewall.@rule[-1].dest_port='51820'
+	uci set firewall.@rule[-1].target='ACCEPT'
+	uci commit firewall
+fi
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-wireguard-allow
+
 cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
 #!/bin/sh
-# DNS 架构（与 192.168.5.3 实机配置一致）：dnsmasq 仅保留 DHCP（port 0），
-# AdGuardHome 占 53 做过滤，mosdns 在 5335 作为 AGH 的分流上游
-# 不固化：自定义规则列表、国内/远程 DNS 服务器、ECS 等隐私项
+# 与实机配置一致：dnsmasq 仅保留 DHCP，AdGuardHome 占 53，mosdns 5335 为其上游
+# 不固化：自定义规则列表、DNS 服务器等隐私项
 [ -f /etc/config/mosdns ] || exit 0
 
 uci -q set mosdns.config.enabled='1'
@@ -861,9 +839,7 @@ chmod 755 files/etc/uci-defaults/99-mitigations-off
 
 cat > files/etc/uci-defaults/99-hold-core-packages <<'EOF'
 #!/bin/sh
-	# apk 没有 hold 子命令，等价做法是把 world 里的包名改写成 名字=版本：
-	# dnsmasq/防火墙关键包固定在固件内置版本，apk upgrade 不会自动升级它们
-	# mosdns 有意不固定，允许随源升级
+# apk 无 hold 命令：改写 world 为 名字=版本 固定内置版本（mosdns 有意不固定）
 world=/etc/apk/world
 db=/lib/apk/db/installed
 [ -f "$world" ] && [ -f "$db" ] || exit 0
@@ -897,6 +873,36 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-openssh-sshd-user
+
+# root shell 别名与彩色 ls（sbwml/r4s_build_script 的 .bashrc，busybox 适配版：
+# 去掉 dircolors 与 /etc/bashrc 引用，busybox 环境不存在这两者）
+mkdir -p files/root
+cat > files/root/.bashrc <<'EOF'
+# root shell aliases
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+# 彩色 ls（busybox ls 原生支持 --color）
+alias ls='ls --color=auto'
+alias ll='ls -l --color=auto'
+EOF
+
+cat > files/root/.bash_profile <<'EOF'
+# bash 登录时加载 .bashrc
+[ -f ~/.bashrc ] && . ~/.bashrc
+EOF
+
+cat > files/etc/uci-defaults/99-root-shell-bash <<'EOF'
+#!/bin/sh
+# root 登录 shell 固定为 /bin/bash（bash 包已随固件安装）
+if [ -x /bin/bash ] && ! grep -q '^root:.*:/bin/bash$' /etc/passwd; then
+	sed -i 's|^\(root:.*:\)[^:]*$|\1/bin/bash|' /etc/passwd
+fi
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-root-shell-bash
 
 cat > files/etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers <<'EOF'
 #!/bin/sh
