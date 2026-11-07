@@ -101,6 +101,22 @@ jobs:
       run: |
         make -j$(( $(nproc) + 1 )) || make -j1 V=s
 
+    - name: Verify ophub script patches in rootfs
+      working-directory: ./openwrt
+      run: |
+        # diy.sh 对 ophub 插件脚本的补丁曾出现过"日志成功但镜像未生效"的漂移，
+        # 此步骤在发布前强制验证，失败即终止，防止带着旧脚本发布
+        tgz=$(ls bin/targets/armsr/armv8/*rootfs.tar.gz)
+        echo "检查 $tgz"
+        if tar -xOzf "$tgz" ./usr/sbin/openwrt-update-amlogic | grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome'; then
+          echo "FAIL: openwrt-update-amlogic 仍含 AGH 迁移块"
+          exit 1
+        fi
+        for p in './etc/adguardhome/' './etc/mosdns/rule/' './usr/share/nlbwmon/'; do
+          tar -xOzf "$tgz" ./usr/sbin/openwrt-backup | grep -qF "$p" || { echo "FAIL: openwrt-backup 缺少备份清单条目 $p"; exit 1; }
+        done
+        echo "OK: ophub 脚本补丁已生效"
+
     - name: Verify firmware version and tuning files
       run: |
         # 纯信息展示步骤：关闭 errexit/pipefail，任何异常只打印 WARN，绝不阻断发布
