@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       fw_version:
-        description: "固件版本号（留空则使用 env.FW_VERSION 的默认值）"
+        description: "固件版本号（留空则自动取上游 25.12 系列最新稳定版）"
         required: false
         default: ""
   schedule:
     - cron: "0 0 1,16 * *"
 
 env:
-  FW_VERSION: ${{ github.event.inputs.fw_version || '25.12.6' }}
+  FW_VERSION: ${{ github.event.inputs.fw_version }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-25.12
@@ -19,21 +19,23 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
     - name: Checkout
       uses: actions/checkout@main
 
     - name: Initialize environment
-      timeout-minutes: 20
+      timeout-minutes: 40
       env:
         DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: l
       run: |
-        # 停掉镜像内置的自动升级，避免抢占 apt/dpkg 锁
-        sudo systemctl stop unattended-upgrades 2>/dev/null || true
-        sudo -E apt-get -qq update > /dev/null
-        sudo -E apt-get -qq install -y \
+        sudo dpkg --configure -a || true
+        apt_try() { timeout "$1" sudo -E apt-get -qq -o DPkg::Lock::Timeout=300 "${@:2}" > /dev/null; }
+        for i in 1 2 3; do apt_try 180 update && s=0 && break || s=1; sleep 30; done
+        [ "$s" = 0 ] || exit 1
+        for i in 1 2 3; do apt_try 480 install -y \
           ack antlr3 asciidoc autoconf automake autopoint \
           binutils bison build-essential bzip2 \
           ccache clang cmake cpio curl \
@@ -50,10 +52,10 @@ jobs:
           qemu-utils re2c rsync scons squashfs-tools \
           subversion swig texinfo uglifyjs upx-ucl \
           unzip vim wget xmlto xxd zlib1g-dev zstd \
-          nodejs cssmin \
-          > /dev/null
+          nodejs cssmin && s=0 && break || s=1; sleep 30; done
+        [ "$s" = 0 ] || exit 1
+        sudo -E apt-get -qq autoremove --purge > /dev/null
         sudo -E apt-get -qq clean > /dev/null
-        # 直写 /etc/localtime 设置时区，不依赖 systemd/dbus（timedatectl 在 ubuntu-24.04 新镜像上会挂起）
         sudo ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
         echo "$TZ" | sudo tee /etc/timezone > /dev/null
         sudo mkdir -p /workdir
@@ -71,6 +73,14 @@ jobs:
         git clone $REPO_URL -b $REPO_BRANCH --single-branch --depth=1 openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
         echo "FILE_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
+        if [ -z "$FW_VERSION" ]; then
+          fw="$(git ls-remote --tags $REPO_URL 'v25.12.*' '25.12.*' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+$' | sort -uV | tail -n1 || true)"
+          [ -n "$fw" ] || fw="25.12"
+          echo "FW_VERSION=$fw" >> $GITHUB_ENV
+          echo "FW_VERSION(auto)=$fw"
+        else
+          echo "FW_VERSION(manual)=$FW_VERSION"
+        fi
 
     - name: Prepare & Install feeds
       working-directory: ./openwrt
@@ -165,7 +175,6 @@ jobs:
           usr/sbin/sshd bin/bash; do
           grep -qE "(^|/)${f}$" "$members" || { echo "MISSING: ${f}"; missing=$((missing + 1)); }
         done
-        rm -f "$members"
 
         if [ "$missing" -eq 0 ]; then
           echo "OK: 运行时优化文件与核心组件均已打进镜像"
@@ -173,11 +182,11 @@ jobs:
           echo "WARN: 有 ${missing} 个文件未打进镜像，详见上方 MISSING 列表（不影响发布）"
         fi
 
-        # AdGuardHome 核心版本断言：与 diy.sh 同步的上游 tag 比对
+        # AdGuardHome 核心版本断言
         agh_bin="$(grep -E '(^|/)usr/bin/AdGuardHome$' "$members" | head -n1)"
         if [ -n "$agh_bin" ]; then
           tar -xOzf "$rootfs" "$agh_bin" > /tmp/agh_bin 2>/dev/null
-          agh_got="$(strings /tmp/agh_bin 2>/dev/null | grep -oE 'v?0\.10[0-9]\.[0-9]+' | head -n1)"
+          agh_got="$(strings /tmp/agh_bin 2>/dev/null | grep -oE 'v?0\.1[0-9]{2}\.[0-9]+' | head -n1)"
           agh_got="${agh_got#v}"
           rm -f /tmp/agh_bin
           if [ -n "$AGH_VERSION" ] && [ -n "$agh_got" ] && [ "$agh_got" != "$AGH_VERSION" ]; then
@@ -186,6 +195,7 @@ jobs:
             echo "OK: AdGuardHome 核心版本 ${agh_got}"
           fi
         fi
+        rm -f "$members"
         exit 0
 
     - name: Package N1 firmware

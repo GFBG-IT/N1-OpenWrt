@@ -2,7 +2,7 @@
 #
 # N1（斐讯 N1 / s905d）编译前准备
 # 调用位置：workflow 的 "Prepare & Install feeds" 步骤；工作目录：openwrt 源码根目录
-# 版本号：环境变量 FW_VERSION，默认值见 workflow 的 env.FW_VERSION
+# 版本号：环境变量 FW_VERSION（手动输入优先，未输入时由 workflow 自动取上游 25.12 系列最新稳定 tag，取不到则回退 25.12）
 #
 
 set -euo pipefail
