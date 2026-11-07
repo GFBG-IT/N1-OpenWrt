@@ -12,7 +12,6 @@ on:
 
 env:
   FW_VERSION: ${{ github.event.inputs.fw_version }}
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-25.12
   TZ: Asia/Shanghai
@@ -23,19 +22,12 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v7
 
     - name: Initialize environment
-      timeout-minutes: 40
-      env:
-        DEBIAN_FRONTEND: noninteractive
-        NEEDRESTART_MODE: l
       run: |
-        sudo dpkg --configure -a || true
-        apt_try() { timeout "$1" sudo -E apt-get -qq -o DPkg::Lock::Timeout=300 "${@:2}" > /dev/null; }
-        for i in 1 2 3; do apt_try 180 update && s=0 && break || s=1; sleep 30; done
-        [ "$s" = 0 ] || exit 1
-        for i in 1 2 3; do apt_try 480 install -y \
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq update > /dev/null
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y \
           ack antlr3 asciidoc autoconf automake autopoint \
           binutils bison build-essential bzip2 \
           ccache clang cmake cpio curl \
@@ -52,12 +44,11 @@ jobs:
           qemu-utils re2c rsync scons squashfs-tools \
           subversion swig texinfo uglifyjs upx-ucl \
           unzip vim wget xmlto xxd zlib1g-dev zstd \
-          nodejs cssmin && s=0 && break || s=1; sleep 30; done
-        [ "$s" = 0 ] || exit 1
-        sudo -E apt-get -qq autoremove --purge > /dev/null
-        sudo -E apt-get -qq clean > /dev/null
-        sudo ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
-        echo "$TZ" | sudo tee /etc/timezone > /dev/null
+          nodejs cssmin \
+          > /dev/null
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq autoremove --purge > /dev/null
+        sudo apt-get -qq clean > /dev/null
+        sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown "$USER:$GROUPS" /workdir
 
@@ -209,7 +200,7 @@ jobs:
         builder_name: anonymous
 
     - name: Upload firmware to release
-      uses: softprops/action-gh-release@master
+      uses: softprops/action-gh-release@v3
       with:
         tag_name: OpenWrt_${{ env.FILE_DATE }}
         files: ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
@@ -222,7 +213,9 @@ jobs:
           密码: password
 
     - name: Delete old releases
-      uses: mgz0227/delete-older-releases@master
+      uses: mgz0227/delete-older-releases@v0.3.4
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         keep_latest: 3
-        delete_tags : true
+        delete_tags: true
