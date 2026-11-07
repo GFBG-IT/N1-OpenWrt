@@ -152,6 +152,7 @@ jobs:
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
           usr/bin/wg usr/bin/wg-quick etc/modules.d/wireguard \
           etc/config/ddns etc/init.d/ddns usr/lib/ddns/dynamic_dns_updater.sh \
+          usr/share/ddns/default/cloudflare.com-v4.json usr/lib/ddns/update_cloudflare_com_v4.sh \
           usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \

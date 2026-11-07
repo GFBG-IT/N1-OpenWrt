@@ -113,13 +113,6 @@ for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng; d
     rm -rf "feeds/packages/net/${pkg}"
 done
 
-# ddns-scripts 服务商定义只保留 Cloudflare（用户指定），其余服务商移除
-ddns_svcdir="feeds/packages/net/ddns-scripts/files/usr/share/ddns/default"
-if [ -d "$ddns_svcdir" ]; then
-    find "$ddns_svcdir" -maxdepth 1 -type f ! -iname '*cloudflare*' -delete
-    log "ddns-scripts 服务商定义已精简为 Cloudflare"
-fi
-
 # telegraf 未选中；把版本化 Go 依赖改成 golang/host，避免编译日志 warning
 if [ -f feeds/packages/utils/telegraf/Makefile ]; then
     sed -i 's|golang1\.27/host|golang/host|' feeds/packages/utils/telegraf/Makefile
@@ -612,8 +605,7 @@ log "LuCI 菜单分类调整完成"
 log "写入运行时优化文件"
 mkdir -p files/etc/sysctl.d files/etc/uci-defaults files/etc/hotplug.d/net files/etc/apk/keys
 
-# nikki / momo / passwall 第三方 apk 源公钥，首次开机由 uci-defaults 追加仓库
-log "写入 nikki / momo / passwall feed 公钥"
+# nikki / momo / passwall 第三方 apk 源公钥（首次开机由 uci-defaults 追加仓库）
 for name in nikki momo; do
     case "$name" in
         nikki) base="https://nikkinikki.pages.dev" ;;
