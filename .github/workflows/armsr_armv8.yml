@@ -26,9 +26,12 @@ jobs:
       uses: actions/checkout@main
 
     - name: Initialize environment
+      timeout-minutes: 20
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        # 停掉镜像内置的自动升级，避免抢占 apt/dpkg 锁
+        sudo systemctl stop unattended-upgrades 2>/dev/null || true
         sudo -E apt-get -qq update > /dev/null
         sudo -E apt-get -qq install -y \
           ack antlr3 asciidoc autoconf automake autopoint \
@@ -49,11 +52,12 @@ jobs:
           unzip vim wget xmlto xxd zlib1g-dev zstd \
           nodejs cssmin \
           > /dev/null
-        sudo -E apt-get -qq autoremove --purge > /dev/null
         sudo -E apt-get -qq clean > /dev/null
-        sudo timedatectl set-timezone "$TZ"
+        # 直写 /etc/localtime 设置时区，不依赖 systemd/dbus（timedatectl 在 ubuntu-24.04 新镜像上会挂起）
+        sudo ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
+        echo "$TZ" | sudo tee /etc/timezone > /dev/null
         sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
+        sudo chown "$USER:$GROUPS" /workdir
 
     - name: Free disk space
       run: |
