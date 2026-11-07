@@ -160,6 +160,7 @@ jobs:
           etc/sysctl.d/20-network-tuning.conf \
           etc/sysctl.d/99-zram.conf \
           etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers \
+          etc/hotplug.d/iface/60-wan6-fixed-gua \
           etc/apk/keys/nikki.pem etc/apk/keys/momo.pem \
           etc/apk/keys/openwrt-passwall-build.pem \
           etc/uci-defaults/99-custom-feeds \
