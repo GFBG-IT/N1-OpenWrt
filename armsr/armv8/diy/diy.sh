@@ -382,6 +382,39 @@ agh_tk_init="package/luci-app-adguardhome-tk/root/etc/init.d/AdGuardHome"
 if [ -f "$agh_tk_init" ] && grep -qF '"$binpath" "$configpath"' "$agh_tk_init"; then
     sed -i 's|"\$binpath" "\$configpath"|"\$configpath"|' "$agh_tk_init"
 fi
+# init 的 config_get 兜底默认值也是目录式布局，UCI 缺失/丢失时会在设备上建出 /usr/bin/AdGuardHome 目录
+sed -i 's|binpath "/usr/bin/AdGuardHome/AdGuardHome"|binpath "/usr/bin/AdGuardHome"|g' "$agh_tk_init"
+sed -i 's|workdir "/usr/bin/AdGuardHome"|workdir "/etc/adguardhome"|g' "$agh_tk_init"
+if grep -Eq 'binpath "/usr/bin/AdGuardHome/AdGuardHome"|workdir "/usr/bin/AdGuardHome"' "$agh_tk_init"; then
+    log "ERROR: adguardhome-tk init 兜底默认值对齐失败，仍存在目录式路径"
+    exit 1
+fi
+log "adguardhome-tk init 兜底默认值已对齐文件式布局"
+
+# ophub 升级脚本自带"AGH 迁移到数据分区"逻辑，会用符号链接顶掉 /usr/bin/AdGuardHome 文件（与单文件
+# 约定冲突）。删除该迁移块后升级保留新编译二进制；备份清单同步补 AGH 数据、mosdns 自定义规则、
+# nlbwmon 协议库，保配置升级不再丢失
+agh_oupd="feeds/luci/applications/luci-app-amlogic/root/usr/sbin/openwrt-update-amlogic"
+if [ -f "$agh_oupd" ] && grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome' "$agh_oupd"; then
+    sed -i '\|^if \[ -f /mnt/${NEW_ROOT_NAME}/etc/config/AdGuardHome \]; then$|,/^fi$/d' "$agh_oupd"
+    if grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome' "$agh_oupd" || ! bash -n "$agh_oupd"; then
+        log "ERROR: ophub 升级脚本 AGH 迁移块删除失败或语法损坏"
+        exit 1
+    fi
+    log "ophub 升级脚本 AGH 迁移块已移除"
+else
+    log "WARN: ophub 升级脚本未发现 AGH 迁移块，请人工核对上游变更"
+fi
+agh_obk="feeds/luci/applications/luci-app-amlogic/root/usr/sbin/openwrt-backup"
+if [ -f "$agh_obk" ] && grep -q '\./etc/AdGuardHome\.yaml \\' "$agh_obk"; then
+    sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./etc/adguardhome/ \\\n./etc/mosdns/rule/ \\\n./usr/share/nlbwmon/ \\|' "$agh_obk"
+    for p in './etc/adguardhome/' './etc/mosdns/rule/' './usr/share/nlbwmon/'; do
+        grep -qF "$p" "$agh_obk" || { log "ERROR: ophub 备份清单补充 ${p} 失败"; exit 1; }
+    done
+    log "ophub 备份清单已加入 adguardhome / mosdns 规则 / nlbwmon 协议库"
+else
+    log "WARN: ophub 备份清单锚点未找到，请人工核对上游变更"
+fi
 
 log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
 
@@ -692,6 +725,21 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-wireguard-allow
+
+cat > files/etc/uci-defaults/99-adguardhome-paths <<'EOF'
+#!/bin/sh
+# 保配置升级会残留旧版目录式 UCI 和指向数据分区的符号链接（旧升级脚本所为），
+# 首启强制拉回约定布局：核心为单文件 /usr/bin/AdGuardHome，数据在 /etc/adguardhome
+[ -L /usr/bin/AdGuardHome ] && rm -f /usr/bin/AdGuardHome
+uci -q get AdGuardHome.AdGuardHome >/dev/null || exit 0
+uci -q set AdGuardHome.AdGuardHome.binpath='/usr/bin/AdGuardHome'
+uci -q set AdGuardHome.AdGuardHome.workdir='/etc/adguardhome'
+uci -q set AdGuardHome.AdGuardHome.configpath='/etc/adguardhome/adguardhome.yaml'
+uci -q commit AdGuardHome
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-adguardhome-paths
 
 cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
 #!/bin/sh

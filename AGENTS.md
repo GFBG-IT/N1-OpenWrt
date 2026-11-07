@@ -47,6 +47,7 @@
 - 保持 `N/9` 编号分节结构（1 版本号 / 2 feeds 更新 / 3 feeds 调整 / 4 引入外部组件 / 5 菜单分类 / 6 运行时文件 / 7 包内补丁 / 8 索引重建 / 9 清理）；新逻辑放进语义对应的小节，不另起炉灶。
 - 所有 `set -euo pipefail` 下的改动要意识到**任何未兜底的命令失败都会中止编译**。
 - 修改 feeds / 上游文件必须三件套：`[ -f ... ]` 存在性判断 → 修改 → `grep` 校验修改生效；失败打 `WARN`（可跳过）或 `ERROR` + `exit 1`（必须成功）。
+- 对 ophub 插件脚本（`feeds/luci/applications/luci-app-amlogic/root/usr/sbin/openwrt-*`，上游 main 滚动更新）打补丁同样走三件套；锚点未命中属上游漂移，打 `WARN` 提示人工核对，不阻断编译。
 - **核心组件（xray、mihomo、AdGuardHome 等编译必需项）**：获取失败重试 3 次，仍失败才 `exit 1`；**非核心（openlist2、sing-box、geoview、ddnstox、geo 数据等）**：失败回退仓库自带版本，打 WARN 不阻断。
 - 外部仓库克隆统一走 `clone_bg` / `wait_clones` 并行机制（内含重试 3 次），不要新写串行 `git clone`。
 - 版本号只取正式 tag（`^v[0-9]+(\.[0-9]+)+$`），排除 alpha/rc；mihomo 用稳定版不引 alpha。
@@ -70,6 +71,7 @@
 
 - **uci-defaults 一律幂等**：`uci -q`、`grep` 前置判断、`exit 0` 结尾、`chmod 755`。
 - **隐私不固化**：DNS 服务器、自定义规则列表、节点/订阅信息一律不写进仓库（见 `99-mosdns-tuning` 头注释）。
+- **需跨升级保留的用户数据**（mosdns 规则、nlbwmon 协议库、AGH 数据等）通过 diy.sh 扩展 ophub 备份清单（`openwrt-backup` 的 `BACKUP_LIST`）在设备本地随升级保留，不在仓库或镜像中固化内容。
 - 设备上发现的问题，**修复要固化到 diy.sh / files/ 随固件生效**，同时给出设备上立即可用的过渡命令；**不直接改在线设备**。
 
 ### 4.5 注释规范（对全部文件生效）
@@ -102,7 +104,7 @@
 
 1. **提案先行**：先给方案（含取舍），经用户确认才动手；拿不准时列出 2-3 个选项供拍板，用户自会调研后决策，尊重其结论。
 2. **改动留在工作区 review**，用户过目后才提交；**commit 由用户自己做**（惯用简短信息，如 `update`），助手不擅自 commit / push。
-3. **禁止 `git add .`**：仓库无 `.gitignore`，`.idea/` 未跟踪，必须逐文件 add。
+3. **禁止 `git add .`**：仓库无 `.gitignore`，`.idea/` 未跟踪，必须逐文件 add。固件镜像（`*.img` / `*.img.gz`）与本地分析产物属临时文件，用完移出或删除，不得以任何形式入库。
 4. 一次会话的改动聚焦一个主题；完成后总结改动点、验证结果与遗留事项。
 5. 推送后由**用户手动触发** workflow（Actions → Build ImmortalWrt-25.12），用户会事后刷机实测验证产物。
 6. 与本仓库无关的小工具（如局域网查询类脚本）放 `E:\github` 下独立目录，**不混入本仓库**。
@@ -113,6 +115,7 @@
 - 本机无 Python yaml 模块；node（v24）可用。
 - 注意 CRLF：处理 uEnv.txt 等 boot 分区文件时先 `sed -i 's/\r$//'` 去尾随回车。
 - 用户设备：N1 `192.168.5.3`（root），PC `192.168.5.6`；远程操作设备走临时 SSH 脚本，**输出中不得出现节点信息与凭据**。
+- **远程写设备必须走受审脚本**：写操作先落成完整脚本（幂等、带备份回滚、语法/存在性校验）再 `ssh 'sh -s' < 脚本` 执行；禁止 `cat >>` 等无界追加与未重定向的 stdin 管道；执行后必查 `df -h` 与脚本语法（根分区满会让一切写入静默截断，openwrt_size 保持 1280MiB 无余量，属既知约束）。
 
 ## 8. 踩坑备忘（改相关区域前先看）
 
@@ -121,6 +124,8 @@
 - LuCI 在线用户统计只认 `br-lan`，N1 是 eth0 → diy.sh 已修；进程页 rpcd popen 有竞态 → 已替换为 /proc 直读。
 - 复制自 git 子目录的 LuCI 包无 `.git` 会让 luci.mk 回退版本号 0 → `fix_luci_po_version` 补 `PKG_PO_VERSION`。
 - AdGuardHome keep.d 若保留二进制，配置升级时旧核心会覆盖新编译版 → init 已改为只带 configpath。
+- luci-app-amlogic 保配置升级会保留旧版 /etc/config（目录式旧 UCI 残留）→ `99-adguardhome-paths` 首启兜底；旧版升级脚本还会用符号链接把 `/usr/bin/AdGuardHome` 顶到数据分区 → 迁移块已由 diy.sh 删除。
+- ophub 升级备份清单（`openwrt-backup` 的 `BACKUP_LIST`）默认不含 `/etc/adguardhome`、`/etc/mosdns/rule`、`/usr/share/nlbwmon` → diy.sh 已打补丁补充；新增需跨升级保留的路径时同步扩展该补丁并更新 Verify 清单。
 - `kmod-ipv6`、`addition-trans-zh`、`CONFIG_DNSMASQ_NFTSET`、`CONFIG_LUCI_LANG_en` 等是死符号，勿再加回。
 - 25.12 的 `LIBCURL_HTTP3` 替代了废弃的 NGHTTP3/NGTCP2 符号。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
