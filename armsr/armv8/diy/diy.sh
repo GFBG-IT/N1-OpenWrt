@@ -303,7 +303,6 @@ clone_bg https://github.com/sbwml/luci-app-mosdns clone/mosdns ""
 clone_bg https://github.com/sbwml/luci-app-openlist2 clone/openlist2 ""
 clone_bg https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox ""
 clone_bg https://github.com/nikkinikki-org/OpenWrt-nikki clone/nikki ""
-clone_bg https://github.com/nikkinikki-org/OpenWrt-momo clone/momo ""
 clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
 clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
@@ -343,11 +342,6 @@ rm -rf package/nikki package/luci-app-nikki package/mihomo-meta
 cp -rf clone/nikki/nikki package/nikki
 cp -rf clone/nikki/luci-app-nikki package/luci-app-nikki
 cp -rf clone/nikki/mihomo-meta package/mihomo-meta
-
-# momo（sing-box 复用 passwall_packages）
-rm -rf package/momo package/luci-app-momo
-cp -rf clone/momo/momo package/momo
-cp -rf clone/momo/luci-app-momo package/luci-app-momo
 
 # autocore（CPU 信息展示）
 rm -rf feeds/packages/utils/autocore
@@ -394,7 +388,7 @@ log "adguardhome-tk init 兜底默认值已对齐文件式布局"
 # ophub 的 remake 打包时从官方仓库实时下载插件脚本覆盖 /usr/sbin，构建期对 feeds 层的补丁不生效；
 # 升级后的自愈由 99-adguardhome-paths 在首启完成（见 §6），此处不再打 ophub 脚本补丁
 
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -468,7 +462,7 @@ if [ -n "$openlist_tag" ]; then
     fi
 fi
 
-# sing-box：最新正式 tag（passwall_packages / momo 共用）
+# sing-box：最新正式 tag（passwall_packages 使用）
 singbox_tag="$(github_latest_tag https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
 if [ -n "$singbox_tag" ]; then
     singbox_ver="${singbox_tag#v}"
@@ -588,7 +582,6 @@ fix_luci_po_version() {
 }
 
 fix_luci_po_version package/luci-app-nikki/Makefile
-fix_luci_po_version package/luci-app-momo/Makefile
 fix_luci_po_version package/mosdns/luci-app-mosdns/Makefile
 fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
 fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
@@ -616,25 +609,20 @@ log "LuCI 菜单分类调整完成"
 log "写入运行时优化文件"
 mkdir -p files/etc/sysctl.d files/etc/uci-defaults files/etc/hotplug.d/net files/etc/apk/keys
 
-# nikki / momo / passwall 第三方 apk 源公钥（首次开机由 uci-defaults 追加仓库）
-for name in nikki momo; do
-    case "$name" in
-        nikki) base="https://nikkinikki.pages.dev" ;;
-        momo)  base="https://momomomo.pages.dev" ;;
-    esac
-    curl -fsSL --retry 3 --retry-all-errors "${base}/public-key.pem" -o "files/etc/apk/keys/${name}.pem"
-    if ! grep -q 'BEGIN PUBLIC KEY' "files/etc/apk/keys/${name}.pem"; then
-        log "ERROR: ${name} feed 公钥下载失败"
-        exit 1
-    fi
-done
+# nikki / passwall 第三方 apk 源公钥（首次开机由 uci-defaults 追加仓库）
+curl -fsSL --retry 3 --retry-all-errors "https://nikkinikki.pages.dev/public-key.pem" \
+    -o files/etc/apk/keys/nikki.pem
+if ! grep -q 'BEGIN PUBLIC KEY' files/etc/apk/keys/nikki.pem; then
+    log "ERROR: nikki feed 公钥下载失败"
+    exit 1
+fi
 curl -fsSL --retry 3 --retry-all-errors "https://master.dl.sourceforge.net/project/openwrt-passwall-build/apk.pub" \
     -o files/etc/apk/keys/openwrt-passwall-build.pem
 if ! grep -q 'BEGIN PUBLIC KEY' files/etc/apk/keys/openwrt-passwall-build.pem; then
     log "ERROR: passwall feed 公钥下载失败"
     exit 1
 fi
-log "nikki / momo / passwall feed 公钥写入完成"
+log "nikki / passwall feed 公钥写入完成"
 
 cat > files/etc/sysctl.d/20-network-tuning.conf <<'EOF'
 # N1 网络性能调优：BBR 配套 fq + TCP 缓冲
@@ -809,7 +797,6 @@ add_feed() {
 }
 
 add_feed "https://nikkinikki.pages.dev/${branch}/${arch}/nikki/packages.adb"
-add_feed "https://momomomo.pages.dev/${branch}/${arch}/momo/packages.adb"
 add_feed "https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-${release}/${arch}/passwall_luci/packages.adb"
 add_feed "https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-${release}/${arch}/passwall_packages/packages.adb"
 add_feed "https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-${release}/${arch}/passwall2/packages.adb"

@@ -137,7 +137,7 @@ jobs:
           etc/sysctl.d/20-network-tuning.conf \
           etc/sysctl.d/99-zram.conf \
           etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers \
-          etc/apk/keys/nikki.pem etc/apk/keys/momo.pem \
+          etc/apk/keys/nikki.pem \
           etc/apk/keys/openwrt-passwall-build.pem \
           etc/uci-defaults/99-custom-feeds \
           etc/uci-defaults/99-adguardhome-paths \
@@ -156,14 +156,11 @@ jobs:
           usr/bin/AdGuardHome etc/config/AdGuardHome etc/init.d/AdGuardHome \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
-          usr/bin/wg usr/bin/wg-quick etc/modules.d/wireguard \
-          etc/config/ddns etc/init.d/ddns usr/lib/ddns/dynamic_dns_updater.sh \
-          usr/share/ddns/default/cloudflare.com-v4.json usr/lib/ddns/update_cloudflare_com_v4.sh \
           usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
           etc/init.d/passwall2 \
-          etc/init.d/nikki etc/init.d/momo \
+          etc/init.d/nikki \
           usr/sbin/sshd bin/bash; do
           grep -qE "(^|/)${f}$" "$members" || { echo "MISSING: ${f}"; missing=$((missing + 1)); }
         done
