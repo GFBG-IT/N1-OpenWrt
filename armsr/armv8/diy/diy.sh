@@ -391,30 +391,8 @@ if grep -Eq 'binpath "/usr/bin/AdGuardHome/AdGuardHome"|workdir "/usr/bin/AdGuar
 fi
 log "adguardhome-tk init 兜底默认值已对齐文件式布局"
 
-# ophub 升级脚本自带"AGH 迁移到数据分区"逻辑，会用符号链接顶掉 /usr/bin/AdGuardHome 文件（与单文件
-# 约定冲突）。删除该迁移块后升级保留新编译二进制；备份清单同步补 AGH 数据、mosdns 自定义规则、
-# nlbwmon 协议库，保配置升级不再丢失
-agh_oupd="feeds/luci/applications/luci-app-amlogic/root/usr/sbin/openwrt-update-amlogic"
-if [ -f "$agh_oupd" ] && grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome' "$agh_oupd"; then
-    sed -i '\|^if \[ -f /mnt/${NEW_ROOT_NAME}/etc/config/AdGuardHome \]; then$|,/^fi$/d' "$agh_oupd"
-    if grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome' "$agh_oupd" || ! bash -n "$agh_oupd"; then
-        log "ERROR: ophub 升级脚本 AGH 迁移块删除失败或语法损坏"
-        exit 1
-    fi
-    log "ophub 升级脚本 AGH 迁移块已移除"
-else
-    log "WARN: ophub 升级脚本未发现 AGH 迁移块，请人工核对上游变更"
-fi
-agh_obk="feeds/luci/applications/luci-app-amlogic/root/usr/sbin/openwrt-backup"
-if [ -f "$agh_obk" ] && grep -q '\./etc/AdGuardHome\.yaml \\' "$agh_obk"; then
-    sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./etc/adguardhome/ \\\n./etc/mosdns/rule/ \\\n./usr/share/nlbwmon/ \\|' "$agh_obk"
-    for p in './etc/adguardhome/' './etc/mosdns/rule/' './usr/share/nlbwmon/'; do
-        grep -qF "$p" "$agh_obk" || { log "ERROR: ophub 备份清单补充 ${p} 失败"; exit 1; }
-    done
-    log "ophub 备份清单已加入 adguardhome / mosdns 规则 / nlbwmon 协议库"
-else
-    log "WARN: ophub 备份清单锚点未找到，请人工核对上游变更"
-fi
+# ophub 的 remake 打包时从官方仓库实时下载插件脚本覆盖 /usr/sbin，构建期对 feeds 层的补丁不生效；
+# 升级后的自愈由 99-adguardhome-paths 在首启完成（见 §6），此处不再打 ophub 脚本补丁
 
 log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / momo / autocore / amlogic / argon / adguardhome-tk）"
 
@@ -708,34 +686,28 @@ EOF
 
 chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
 
-cat > files/etc/uci-defaults/99-wireguard-allow <<'EOF'
-#!/bin/sh
-# 放行 WireGuard 监听端口入站（wan6 归入 wan 区域，默认拒绝入站）
-[ -f /etc/config/firewall ] || exit 0
-if ! uci -q get firewall.wg_allow >/dev/null; then
-	uci add firewall rule >/dev/null
-	uci set firewall.@rule[-1].name='Allow-WireGuard'
-	uci set firewall.@rule[-1].src='wan'
-	uci set firewall.@rule[-1].proto='udp'
-	uci set firewall.@rule[-1].dest_port='51820'
-	uci set firewall.@rule[-1].target='ACCEPT'
-	uci commit firewall
-fi
-exit 0
-EOF
-
-chmod 755 files/etc/uci-defaults/99-wireguard-allow
 
 cat > files/etc/uci-defaults/99-adguardhome-paths <<'EOF'
 #!/bin/sh
-# 保配置升级会残留旧版目录式 UCI 和指向数据分区的符号链接（旧升级脚本所为），
-# 首启强制拉回约定布局：核心为单文件 /usr/bin/AdGuardHome，数据在 /etc/adguardhome
+# ophub 的 remake 打包会从官方仓库下载原版插件脚本覆盖 /usr/sbin，升级过程也会刷新它们；
+# 每次升级后的首启在此重新自愈，否则下次升级：AGH 核心被符号链接顶成数据分区目录、
+# 自定义数据不随备份保留
 [ -L /usr/bin/AdGuardHome ] && rm -f /usr/bin/AdGuardHome
+[ -f /usr/bin/AdGuardHome ] || cp -f /mnt/mmcblk2p4/AdGuardHome/AdGuardHome /usr/bin/AdGuardHome 2>/dev/null
+
+UPD=/usr/sbin/openwrt-update-amlogic
+BKP=/usr/sbin/openwrt-backup
+if [ -f "$UPD" ] && grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome' "$UPD"; then
+    sed -i '/^if \[ -f \/mnt\/${NEW_ROOT_NAME}\/etc\/config\/AdGuardHome \]; then$/,/^fi$/d' "$UPD"
+fi
 uci -q get AdGuardHome.AdGuardHome >/dev/null || exit 0
 uci -q set AdGuardHome.AdGuardHome.binpath='/usr/bin/AdGuardHome'
 uci -q set AdGuardHome.AdGuardHome.workdir='/etc/adguardhome'
 uci -q set AdGuardHome.AdGuardHome.configpath='/etc/adguardhome/adguardhome.yaml'
 uci -q commit AdGuardHome
+if [ -f "$BKP" ] && ! grep -q '\./etc/adguardhome/' "$BKP"; then
+    sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./etc/adguardhome/ \\\n./etc/mosdns/rule/ \\\n./usr/share/nlbwmon/ \\|' "$BKP"
+fi
 exit 0
 EOF
 
@@ -749,7 +721,8 @@ cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
 
 uci -q set mosdns.config.enabled='1'
 uci -q set mosdns.config.listen_port='5335'
-uci -q set mosdns.config.listen_address='0.0.0.0'
+uci -q set mosdns.config.redirect='0'
+uci -q set mosdns.config.listen_address='127.0.0.1'
 uci -q set mosdns.config.configfile='/var/etc/mosdns.json'
 uci -q set mosdns.config.log_level='error'
 uci -q set mosdns.config.log_file='/var/log/mosdns.log'
@@ -773,6 +746,7 @@ uci -q set mosdns.config.geo_update_day_time='2'
 uci -q set mosdns.config.geoip_type='geoip-only-cn-private'
 uci -q set mosdns.config.listen_port_api='9091'
 uci -q set mosdns.config.cloudflare='0'
+uci -q set mosdns.config.bootstrap_dns='223.5.5.5'
 uci -q commit mosdns
 
 # dnsmasq 结构参数：DNS 监听关闭，缓存交给上游 AdGuardHome/mosdns
@@ -784,6 +758,14 @@ if [ -f /etc/config/dhcp ] && uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
 	uci -q set dhcp.@dnsmasq[0].rebind_protection='0'
 	uci -q set dhcp.@dnsmasq[0].ednspacket_max='1232'
 	uci -q set dhcp.@dnsmasq[0].dns_redirect='0'
+	uci -q commit dhcp
+fi
+
+# 旁路由不提供 DHCP 服务，避免与主路由抢租约
+if [ -f /etc/config/dhcp ] && uci -q get dhcp.lan >/dev/null 2>&1; then
+	uci -q set dhcp.lan.ignore='1'
+	uci -q set dhcp.lan.dynamicdhcp='0'
+	uci -q set dhcp.lan.dhcpv4='disabled'
 	uci -q commit dhcp
 fi
 
@@ -902,6 +884,20 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-hold-core-packages
+
+cat > files/etc/uci-defaults/99-system-ntp <<'EOF'
+#!/bin/sh
+# NTP 与实机一致：国内源 + cloudflare，不使用 DHCP 广播发现的 NTP
+uci -q set system.ntp.use_dhcp='0'
+for s in ntp.ntsc.ac.cn cn.ntp.org.cn ntp.aliyun.com ntp.tencent.com time.cloudflare.com; do
+	uci -q del_list system.ntp.server="$s"
+	uci -q add_list system.ntp.server="$s"
+done
+uci -q commit system
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-system-ntp
 
 cat > files/etc/uci-defaults/99-openssh-sshd-user <<'EOF'
 #!/bin/sh

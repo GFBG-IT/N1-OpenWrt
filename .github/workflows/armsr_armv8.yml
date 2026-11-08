@@ -101,29 +101,6 @@ jobs:
       run: |
         make -j$(( $(nproc) + 1 )) || make -j1 V=s
 
-    - name: Verify ophub script patches in rootfs
-      working-directory: ./openwrt
-      run: |
-        # diy.sh 对 ophub 插件脚本的补丁曾出现过"日志成功但镜像未生效"的漂移，
-        # 此步骤在发布前强制验证，失败即终止，防止带着旧脚本发布
-        fail=0
-        for tgz in bin/targets/armsr/armv8/*rootfs.tar.gz; do
-          [ -f "$tgz" ] || continue
-          echo "检查 $tgz"
-          upd=$(tar -tzf "$tgz" | grep -m1 'usr/sbin/openwrt-update-amlogic' || true)
-          bkp=$(tar -tzf "$tgz" | grep -m1 'usr/sbin/openwrt-backup' || true)
-          if [ -z "$upd" ] || [ -z "$bkp" ]; then
-            echo "FAIL: $tgz 中找不到 ophub 脚本"; fail=1; continue
-          fi
-          if tar -xOzf "$tgz" "$upd" | grep -q 'ln -sf /mnt/${EMMC_NAME}${PARTITION_NAME}4/AdGuardHome'; then
-            echo "FAIL: $tgz 的 openwrt-update-amlogic 仍含 AGH 迁移块"; fail=1
-          fi
-          for p in './etc/adguardhome/' './etc/mosdns/rule/' './usr/share/nlbwmon/'; do
-            tar -xOzf "$tgz" "$bkp" | grep -qF "$p" || { echo "FAIL: $tgz 的 openwrt-backup 缺少 $p"; fail=1; }
-          done
-        done
-        if [ "$fail" -eq 0 ]; then echo "OK: ophub 脚本补丁已生效"; else exit 1; fi
-
     - name: Verify firmware version and tuning files
       run: |
         # 纯信息展示步骤：关闭 errexit/pipefail，任何异常只打印 WARN，绝不阻断发布
@@ -160,7 +137,6 @@ jobs:
           etc/sysctl.d/20-network-tuning.conf \
           etc/sysctl.d/99-zram.conf \
           etc/hotplug.d/net/01-maximize_nic_rx_tx_buffers \
-          etc/hotplug.d/iface/60-wan6-fixed-gua \
           etc/apk/keys/nikki.pem etc/apk/keys/momo.pem \
           etc/apk/keys/openwrt-passwall-build.pem \
           etc/uci-defaults/99-custom-feeds \

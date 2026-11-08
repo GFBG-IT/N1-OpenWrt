@@ -36,7 +36,7 @@
 6. **中文环境必须保留**：`luci-i18n-base-zh-cn=y` 与 `CONFIG_LUCI_LANG_zh_Hans=y`，删掉 LuCI 会变英文。
 7. **不替换 uhttpd 为 nginx**，不引入 nginx。
 8. **轻量原则**：拒绝重量级组件（如 ddns-go）；同等功能优先纯 shell / 轻量方案。
-9. **`packet_steering` 保持 `'1'`**，不用 `'2'`（绑核仅适合 SQM 场景）。
+9. **`packet_steering` 保持 `'2'`**：25.12 的 ucode 版 steering 脚本语义为"RPS 掩码全核、软中断按流哈希分散到 4 核"（与旧版 shell 脚本相反，旧版 `'2'` 是绑核且仅适合 SQM；流内无乱序——RPS 按流哈希选核）。`'1'` 为单核绑定，仅低载缓存亲和有微小理论优势。
 10. **用户明确锁定不动**：network 中的 fe80 IPv6 地址、workflow action 版本引用、`mitigations=off`。动这些必须先获明确同意。
 11. **mosdns 必须配 `redirect='0'`**，避免与其他 DNS 组件抢 53 端口形成回环。
 
