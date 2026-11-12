@@ -15,6 +15,7 @@
   局域网设备 DNS → AdGuardHome:53 → mosdns:5335（分流/去广告）→ 上游
   passwall2 + xray 透明代理；dnsmasq 监听 1745（53 只留给 AdGuardHome）
   bandix（eBPF）监控 eth0 的流量/连接/DNS，API 只监听 127.0.0.1:8686
+  WireGuard 服务端：kmod-wireguard + wireguard-tools + luci-proto-wireguard，接口与密钥在 LuCI 建
   ```
 
 ## 2. 核心文件地图
@@ -40,6 +41,7 @@
 9. **`packet_steering` 保持 `'2'`**：25.12 的 ucode 版 steering 脚本语义为"RPS 掩码全核、软中断按流哈希分散到 4 核"（与旧版 shell 脚本相反，旧版 `'2'` 是绑核且仅适合 SQM；流内无乱序——RPS 按流哈希选核）。`'1'` 为单核绑定，仅低载缓存亲和有微小理论优势。
 10. **用户明确锁定不动**：network 中的 fe80 IPv6 地址、workflow action 版本引用、`mitigations=off`。动这些必须先获明确同意。
 11. **mosdns 必须配 `redirect='0'`**，避免与其他 DNS 组件抢 53 端口形成回环。
+12. **WireGuard 必须随固件保留**：`kmod-wireguard` / `wireguard-tools` / `luci-proto-wireguard` 三件套缺一不可——少 kmod 内核不支持，少 tools 没有 wg/wg-quick，少 luci-proto 在 LuCI 里建不了接口。
 
 ## 4. 各文件修改规范
 

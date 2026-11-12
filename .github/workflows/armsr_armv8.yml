@@ -158,6 +158,7 @@ jobs:
           usr/libexec/rpcd/luci.bandix usr/share/luci/menu.d/luci-app-bandix.json \
           usr/bin/xray usr/bin/sing-box \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
+          usr/bin/wg etc/modules.d/wireguard \
           usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
