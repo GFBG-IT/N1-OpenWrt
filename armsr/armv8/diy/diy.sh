@@ -82,18 +82,24 @@ case "$build_date" in
     *) log "WARN: 无法获取源码最后提交日期，回退为构建当天日期"; build_date="$(date +%Y%m%d)" ;;
 esac
 
+# 版本描述统一以 OpenWrt 开头（LuCI 固件版本行取自 os-release 的 OPENWRT_RELEASE）；发行版标识 NAME/ID/DISTRIB_ID 仍是 ImmortalWrt
 rel_file="package/base-files/files/etc/openwrt_release"
 if [ -f "$rel_file" ] && grep -q "^DISTRIB_DESCRIPTION='%D %V %C'$" "$rel_file"; then
-    sed -i "s|^DISTRIB_DESCRIPTION='%D %V %C'$|DISTRIB_DESCRIPTION='%D %V ${build_date} %C'|" "$rel_file"
+    sed -i "s|^DISTRIB_DESCRIPTION='%D %V %C'$|DISTRIB_DESCRIPTION='OpenWrt %V ${build_date} %C'|" "$rel_file"
 else
-    log "WARN: openwrt_release 模板格式不符，跳过日期插入"
+    log "WARN: openwrt_release 模板格式不符，跳过版本描述修改"
 fi
 
 os_file="package/base-files/files/usr/lib/os-release"
 if [ -f "$os_file" ] && grep -q '^OPENWRT_RELEASE="%D %V %C"$' "$os_file"; then
-    sed -i "s|^OPENWRT_RELEASE=\"%D %V %C\"$|OPENWRT_RELEASE=\"%D %V ${build_date} %C\"|" "$os_file"
+    sed -i "s|^OPENWRT_RELEASE=\"%D %V %C\"$|OPENWRT_RELEASE=\"OpenWrt %V ${build_date} %C\"|" "$os_file"
 else
-    log "WARN: os-release 模板格式不符，跳过日期插入"
+    log "WARN: os-release 模板格式不符，跳过版本描述修改"
+fi
+if [ -f "$os_file" ] && grep -q '^PRETTY_NAME="%D %V"$' "$os_file"; then
+    sed -i 's|^PRETTY_NAME="%D %V"$|PRETTY_NAME="OpenWrt %V"|' "$os_file"
+else
+    log "WARN: os-release PRETTY_NAME 模板格式不符，跳过版本描述修改"
 fi
 
 log "版本描述编译日期: ${build_date}"
