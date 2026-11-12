@@ -307,6 +307,9 @@ clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
 clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
 clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
+# bandix 固定 tag：包内 PKG_VERSION 与二进制资产 hash 绑死，跟 main 会在上游发版前 404
+clone_bg https://github.com/timsaya/openwrt-bandix clone/bandix v0.12.12
+clone_bg https://github.com/timsaya/luci-app-bandix clone/bandixluci v0.12.12-r5
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -385,10 +388,36 @@ if grep -Eq 'binpath "/usr/bin/AdGuardHome/AdGuardHome"|workdir "/usr/bin/AdGuar
 fi
 log "adguardhome-tk init 兜底默认值已对齐文件式布局"
 
+# bandix（eBPF 流量监控）+ LuCI 前端；两个仓库的 Makefile 在 <仓库>/<同名子目录>/ 下
+rm -rf package/bandix package/luci-app-bandix
+cp -rf clone/bandix/openwrt-bandix package/bandix
+cp -rf clone/bandixluci/luci-app-bandix package/luci-app-bandix
+# 上游默认监控 br-lan，N1 的 LAN 是 eth0，不改则启用监控后取不到数据
+bandix_cfg="package/bandix/files/bandix.config"
+if [ -f "$bandix_cfg" ]; then
+    sed -i "s|option iface 'br-lan'|option iface 'eth0'|" "$bandix_cfg"
+fi
+if [ -f "$bandix_cfg" ] && grep -q "option iface 'eth0'" "$bandix_cfg"; then
+    log "bandix 默认监控接口已对齐 eth0"
+else
+    log "WARN: bandix 默认监控接口仍为 br-lan，需在 LuCI 手动改为 eth0"
+fi
+# luci.mk 的 findrev 在无 .git 的拷贝目录回退 0，i18n 包版本会变成 0-r<N>
+bandix_luci_mk="package/luci-app-bandix/Makefile"
+if [ -f "$bandix_luci_mk" ]; then
+    sed -i '/^# Rebuild language packages when a package revision changes without a PO commit\.$/d' "$bandix_luci_mk"
+    sed -i 's|^PKG_PO_VERSION=.*$|PKG_PO_VERSION:=$(PKG_VERSION)|' "$bandix_luci_mk"
+fi
+if [ -f "$bandix_luci_mk" ] && grep -q '^PKG_PO_VERSION:=\$(PKG_VERSION)$' "$bandix_luci_mk"; then
+    log "luci-app-bandix PO 版本已固定为 \$(PKG_VERSION)"
+else
+    log "WARN: luci-app-bandix 的 PKG_PO_VERSION 未固定，i18n 包版本可能回退为 0"
+fi
+
 # ophub 的 remake 打包时从官方仓库实时下载插件脚本覆盖 /usr/sbin，构建期对 feeds 层的补丁不生效；
 # 升级后的自愈由 99-adguardhome-paths 在首启完成（见 §6），此处不再打 ophub 脚本补丁
 
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk）"
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -696,6 +725,14 @@ uci -q commit AdGuardHome
 if [ -f "$BKP" ] && ! grep -q '\./etc/adguardhome/' "$BKP"; then
     sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./etc/adguardhome/ \\\n./etc/mosdns/rule/ \\\n./usr/share/nlbwmon/ \\|' "$BKP"
 fi
+# bandix 的数据/限速配置在 /usr/share/bandix，同样要随 ophub 升级保留
+if [ -f "$BKP" ] && ! grep -q '\./usr/share/bandix/' "$BKP"; then
+    if grep -q '\./usr/share/nlbwmon/ \\' "$BKP"; then
+        sed -i 's|\./usr/share/nlbwmon/ \\|&\n./usr/share/bandix/ \\|' "$BKP"
+    else
+        sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./usr/share/bandix/ \\|' "$BKP"
+    fi
+fi
 exit 0
 EOF
 
@@ -703,7 +740,7 @@ chmod 755 files/etc/uci-defaults/99-adguardhome-paths
 
 cat > files/etc/uci-defaults/99-mosdns-tuning <<'EOF'
 #!/bin/sh
-# 与实机配置一致：dnsmasq 仅保留 DHCP，AdGuardHome 占 53，mosdns 5335 为其上游
+# 与实机配置一致：AdGuardHome 占 53，mosdns 5335 为其上游，dnsmasq 监听 1745
 # 不固化：自定义规则列表、DNS 服务器等隐私项
 [ -f /etc/config/mosdns ] || exit 0
 
@@ -737,9 +774,9 @@ uci -q set mosdns.config.cloudflare='0'
 uci -q set mosdns.config.bootstrap_dns='223.5.5.5'
 uci -q commit mosdns
 
-# dnsmasq 结构参数：DNS 监听关闭，缓存交给上游 AdGuardHome/mosdns
+# dnsmasq 结构参数：监听端口让给 AdGuardHome，缓存交给上游 AdGuardHome/mosdns
 if [ -f /etc/config/dhcp ] && uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
-	uci -q set dhcp.@dnsmasq[0].port='0'
+	uci -q set dhcp.@dnsmasq[0].port='1745'
 	uci -q set dhcp.@dnsmasq[0].cachesize='0'
 	uci -q set dhcp.@dnsmasq[0].use_stale_cache='3600'
 	uci -q set dhcp.@dnsmasq[0].nonegcache='1'

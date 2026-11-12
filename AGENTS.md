@@ -13,7 +13,8 @@
 - 代理与 DNS 架构（改动网络相关内容前必须理解）：
   ```
   局域网设备 DNS → AdGuardHome:53 → mosdns:5335（分流/去广告）→ 上游
-  passwall2 + xray 透明代理；dnsmasq port=0 只保留 DHCP
+  passwall2 + xray 透明代理；dnsmasq 监听 1745（53 只留给 AdGuardHome）
+  bandix（eBPF）监控 eth0 的流量/连接/DNS，API 只监听 127.0.0.1:8686
   ```
 
 ## 2. 核心文件地图
@@ -64,7 +65,7 @@
 
 - Verify 步骤定位是**纯信息展示**：已 `set +e` / `set +o pipefail`，任何异常只打 WARN/MISSING，**绝不阻断发布**。不要往里加会 exit 非零的逻辑。
 - **新增运行时文件（uci-defaults / sysctl.d / ssh 配置等）必须同步加进 Verify 的 MISSING 清单；删除文件必须同步移除**，保持清单与 diy.sh 产物一致。
-- 只校验核心组件（mosdns / passwall2 / AGH / sshd / bash / WireGuard / DDNS 等）；主题等非核心不校验。
+- 只校验核心组件（mosdns / passwall2 / AGH / bandix / sshd / bash / WireGuard / DDNS 等）；主题等非核心不校验。
 - 发布信息（IP 192.168.5.3 / root / password）是既有公开约定，保持不动。
 
 ### 4.4 运行时文件（files/）
@@ -125,7 +126,8 @@
 - 复制自 git 子目录的 LuCI 包无 `.git` 会让 luci.mk 回退版本号 0 → `fix_luci_po_version` 补 `PKG_PO_VERSION`。
 - AdGuardHome keep.d 若保留二进制，配置升级时旧核心会覆盖新编译版 → init 已改为只带 configpath。
 - luci-app-amlogic 保配置升级会保留旧版 /etc/config（目录式旧 UCI 残留）→ `99-adguardhome-paths` 首启兜底；旧版升级脚本还会用符号链接把 `/usr/bin/AdGuardHome` 顶到数据分区 → 迁移块已由 diy.sh 删除。
-- ophub 升级备份清单（`openwrt-backup` 的 `BACKUP_LIST`）默认不含 `/etc/adguardhome`、`/etc/mosdns/rule`、`/usr/share/nlbwmon` → diy.sh 已打补丁补充；新增需跨升级保留的路径时同步扩展该补丁并更新 Verify 清单。
+- ophub 升级备份清单（`openwrt-backup` 的 `BACKUP_LIST`）默认不含 `/etc/adguardhome`、`/etc/mosdns/rule`、`/usr/share/nlbwmon`、`/usr/share/bandix` → diy.sh 已打补丁补充；新增需跨升级保留的路径时同步扩展该补丁并更新 Verify 清单。
+- bandix 用上游 release 的预编译 aarch64-musl 二进制，版本与 `PKG_HASH` 写死在包内；目标换成 glibc 时资产名对不上，`make download` 会直接失败。
 - `kmod-ipv6`、`addition-trans-zh`、`CONFIG_DNSMASQ_NFTSET`、`CONFIG_LUCI_LANG_en` 等是死符号，勿再加回。
 - 25.12 的 `LIBCURL_HTTP3` 替代了废弃的 NGHTTP3/NGTCP2 符号。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
