@@ -26,7 +26,7 @@
 | `armsr/armv8/N1/.config` | OpenWrt 包选择配置，`### N. SECTION ###` 共 9 个分区 |
 | `.github/workflows/armsr_armv8.yml` | CI：手动触发 + 每月 1、16 号定时；含 Verify 步骤与发布 |
 | `armsr/armv8/N1/files/` | 静态系统文件（network / amlogic / crontabs / rc.d / ssh） |
-| `diy.sh` 生成的运行时文件 | `files/etc/{sysctl.d,uci-defaults,hotplug.d/net,apk/keys}`、`files/root/.bashrc`，均由 diy.sh 每次构建时写入 |
+| `diy.sh` 生成的运行时文件 | `files/etc/{sysctl.d,uci-defaults,hotplug.d/net,apk/keys}`、`files/root/.bashrc` / `.bash_profile`，均由 diy.sh 每次构建时写入 |
 
 ## 3. 架构红线（不可违背）
 
@@ -122,16 +122,17 @@
 
 ## 8. 踩坑备忘（改相关区域前先看）
 
-- flippy 打包会把 `system.zram_size_mb` 置 0 → `99-zram-size` 恢复 256MB。
+- flippy 打包会把 `system.zram_size_mb` 置 0 → `99-zram-size` 恢复 256MB 兜底，`zzz-zram-tuning`（文件名排序在其后）按物理内存 25% 覆盖并设 `zram_comp_algo='lz4'`。
 - irqbalance 与 flippy `S95done` 静态中断分配冲突 → 已移除，用 `S96-rps-4cpu` 做 4 核 RPS 分摊（覆盖 ophub 注入的 S95done）。
 - LuCI 在线用户统计只认 `br-lan`，N1 是 eth0 → diy.sh 已修；进程页 rpcd popen 有竞态 → 已替换为 /proc 直读。
-- 复制自 git 子目录的 LuCI 包无 `.git` 会让 luci.mk 回退版本号 0 → `fix_luci_po_version` 补 `PKG_PO_VERSION`。
+- 复制自 git 子目录的 LuCI 包无 `.git` 会让 luci.mk 回退版本号 0 → `fix_luci_po_version` 补 `PKG_PO_VERSION`；连 `PKG_VERSION` 都没有的包（如 OneNAS luci-app-vlmcsd）需先补 `PKG_VERSION` 再走该函数。
 - AdGuardHome keep.d 若保留二进制，配置升级时旧核心会覆盖新编译版 → init 已改为只带 configpath。
 - luci-app-amlogic 保配置升级会保留旧版 /etc/config（目录式旧 UCI 残留）→ `99-adguardhome-paths` 首启兜底；旧版升级脚本还会用符号链接把 `/usr/bin/AdGuardHome` 顶到数据分区 → 迁移块已由 diy.sh 删除。
 - ophub 升级备份清单（`openwrt-backup` 的 `BACKUP_LIST`）默认不含 `/etc/adguardhome`、`/etc/mosdns/rule`、`/usr/share/nlbwmon`、`/usr/share/bandix` → diy.sh 已打补丁补充；新增需跨升级保留的路径时同步扩展该补丁并更新 Verify 清单。
 - bandix 用上游 release 的预编译 aarch64-musl 二进制，版本与 `PKG_HASH` 写死在包内；目标换成 glibc 时资产名对不上，`make download` 会直接失败。
 - `kmod-ipv6`、`addition-trans-zh`、`CONFIG_DNSMASQ_NFTSET`、`CONFIG_LUCI_LANG_en` 等是死符号，勿再加回。
 - 25.12 的 `LIBCURL_HTTP3` 替代了废弃的 NGHTTP3/NGTCP2 符号。
+- sbwml 的 ngtcp2/nghttp3 替换官方 feed 时必须成对（ngtcp2 新版依赖新版 libnghttp3），只换一个会断 curl 的 HTTP3 依赖链。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
 
 ## 9. 沟通约定

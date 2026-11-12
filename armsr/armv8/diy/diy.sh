@@ -115,7 +115,8 @@ log "feeds 更新完成"
 # 3/9 调整 feeds
 # ---------------------------------------------------------------------------
 log "删除 feeds 里的同名旧包"
-for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng; do
+# vlmcsd 官方 feed 版本停更于 2020（Wind4 死源），由 OneNAS 版替代
+for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng vlmcsd; do
     rm -rf "feeds/packages/net/${pkg}"
 done
 
@@ -316,6 +317,12 @@ clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
 # bandix 固定 tag：包内 PKG_VERSION 与二进制资产 hash 绑死，跟 main 会在上游发版前 404
 clone_bg https://github.com/timsaya/openwrt-bandix clone/bandix v0.12.12
 clone_bg https://github.com/timsaya/luci-app-bandix clone/bandixluci v0.12.12-r5
+clone_bg https://github.com/rabbitrogi/luci-app-zerotier clone/zerotierluci ""
+clone_bg https://github.com/OneNAS-space/vlmcsd clone/vlmcsd ""
+clone_bg https://github.com/OneNAS-space/luci-app-vlmcsd clone/vlmcsdluci ""
+clone_bg https://github.com/sbwml/luci-app-airconnect clone/airconnect ""
+clone_bg https://github.com/sbwml/package_libs_ngtcp2 clone/ngtcp2 ""
+clone_bg https://github.com/sbwml/package_libs_nghttp3 clone/nghttp3 ""
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -420,10 +427,29 @@ else
     log "WARN: luci-app-bandix 的 PKG_PO_VERSION 未固定，i18n 包版本可能回退为 0"
 fi
 
+# luci-app-zerotier（ZeroTier JS 版管理界面，依赖官方 feed 的 zerotier）
+rm -rf package/luci-app-zerotier
+cp -rf clone/zerotierluci package/luci-app-zerotier
+
+# vlmcsd（KMS 激活）+ LuCI 前端
+rm -rf package/vlmcsd package/luci-app-vlmcsd
+cp -rf clone/vlmcsd package/vlmcsd
+cp -rf clone/vlmcsdluci package/luci-app-vlmcsd
+
+# airconnect（AirPlay 音频桥接）：仓库内包目录与包名同名
+rm -rf package/airconnect package/luci-app-airconnect
+cp -rf clone/airconnect/airconnect package/airconnect
+cp -rf clone/airconnect/luci-app-airconnect package/luci-app-airconnect
+
+# ngtcp2 / nghttp3（curl HTTP3 的 QUIC 栈）：官方 feed 版本旧，必须成对替换（ngtcp2 依赖新版 libnghttp3）
+rm -rf feeds/packages/libs/ngtcp2 feeds/packages/libs/nghttp3
+cp -rf clone/ngtcp2 feeds/packages/libs/ngtcp2
+cp -rf clone/nghttp3 feeds/packages/libs/nghttp3
+
 # ophub 的 remake 打包时从官方仓库实时下载插件脚本覆盖 /usr/sbin，构建期对 feeds 层的补丁不生效；
 # 升级后的自愈由 99-adguardhome-paths 在首启完成（见 §6），此处不再打 ophub 脚本补丁
 
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix）"
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix / zerotier / vlmcsd / airconnect / ngtcp2+nghttp3）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -622,6 +648,19 @@ fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
 fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
 fix_luci_po_version package/passwall2/luci-app-passwall2/Makefile
 fix_luci_po_version feeds/luci/applications/luci-app-amlogic/Makefile
+fix_luci_po_version package/luci-app-zerotier/Makefile
+fix_luci_po_version package/luci-app-airconnect/Makefile
+
+# OneNAS 的 luci-app-vlmcsd 没有 PKG_VERSION 行，无 .git 拷贝目录下 i18n 包版本会回退为 0
+vlmcsd_luci_mk="package/luci-app-vlmcsd/Makefile"
+if [ -f "$vlmcsd_luci_mk" ] && ! grep -q '^PKG_VERSION:=' "$vlmcsd_luci_mk"; then
+    sed -i 's|^LUCI_DEPENDS:=+vlmcsd$|LUCI_DEPENDS:=+vlmcsd\nPKG_VERSION:=1.0.0\nPKG_PO_VERSION:=$(PKG_VERSION)|' "$vlmcsd_luci_mk"
+fi
+if [ -f "$vlmcsd_luci_mk" ] && grep -q '^PKG_PO_VERSION:=\$(PKG_VERSION)$' "$vlmcsd_luci_mk"; then
+    log "luci-app-vlmcsd 版本号已补齐"
+else
+    log "WARN: luci-app-vlmcsd 的 PKG_VERSION/PKG_PO_VERSION 未补齐，i18n 包版本可能回退为 0"
+fi
 log "LuCI 包版本修正完成"
 
 # ---------------------------------------------------------------------------
@@ -635,6 +674,33 @@ fi
 openlist2_menu="package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json"
 if [ -f "$openlist2_menu" ]; then
     sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' "$openlist2_menu"
+fi
+
+# ksmbd 菜单与原 samba4 一致放到 NAS 目录
+ksmbd_menu="feeds/luci/applications/luci-app-ksmbd/root/usr/share/luci/menu.d/luci-app-ksmbd.json"
+if [ -f "$ksmbd_menu" ]; then
+    sed -i 's|admin/services/ksmbd|admin/nas/ksmbd|g' "$ksmbd_menu"
+    if grep -q 'admin/nas/ksmbd' "$ksmbd_menu"; then
+        log "ksmbd 菜单已移至 NAS 目录"
+    else
+        log "WARN: ksmbd 菜单移动未生效，仍为 admin/services"
+    fi
+else
+    log "WARN: 未找到 feeds luci-app-ksmbd，跳过菜单调整"
+fi
+
+zerotier_menu="package/luci-app-zerotier/root/usr/share/luci/menu.d/luci-app-zerotier.json"
+if [ -f "$zerotier_menu" ]; then
+    sed -i 's|admin/vpn/zerotier|admin/network/zerotier|' "$zerotier_menu"
+    # zerotier 挪走后自建的 admin/vpn 一级分类成空目录，一并删除
+    sed -i '/^\t"admin\/vpn": {$/,/^\t},$/d' "$zerotier_menu"
+    if grep -q 'admin/network/zerotier' "$zerotier_menu" && ! grep -q '"admin/vpn"' "$zerotier_menu"; then
+        log "zerotier 菜单已移至 network 目录"
+    else
+        log "WARN: zerotier 菜单调整未完全生效，请人工核对菜单 JSON"
+    fi
+else
+    log "WARN: 未找到 package/luci-app-zerotier，跳过菜单调整"
 fi
 log "LuCI 菜单分类调整完成"
 
@@ -685,7 +751,7 @@ EOF
 cat > files/etc/uci-defaults/99-zram-size <<'EOF'
 #!/bin/sh
 # flippy 打包会把 system.zram_size_mb 置 0，S15zram 随即建立 0 字节设备失败（swap 恒为 0）
-# 恢复为 256MB：zram 空闲时几乎不占内存，仅在内存压力时作交换兜底
+# 恢复为 256MB 兜底：zram 空闲时几乎不占内存；zzz-zram-tuning 会按物理内存 25% 覆盖此值
 if uci -q get system.@system[0] >/dev/null 2>&1; then
 	uci -q set system.@system[0].zram_size_mb='256'
 	uci -q commit system
@@ -694,6 +760,22 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-zram-size
+
+cat > files/etc/uci-defaults/zzz-zram-tuning <<'EOF'
+#!/bin/sh
+# 文件名排序保证在 99-zram-size 之后执行：按物理内存 25% 覆盖固定 256MB，压缩算法用 lz4（kmod-lib-lz4 已内置）
+mem_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+[ -n "$mem_total" ] || exit 0
+zram_size=$(awk "BEGIN {print int($mem_total * 0.25 / 1024)}")
+if uci -q get system.@system[0] >/dev/null 2>&1; then
+	uci -q set system.@system[0].zram_size_mb="$zram_size"
+	uci -q set system.@system[0].zram_comp_algo='lz4'
+	uci -q commit system
+fi
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/zzz-zram-tuning
 
 cat > files/etc/uci-defaults/99-firewall-flow-offload <<'EOF'
 #!/bin/sh
