@@ -13,7 +13,7 @@
 - 代理与 DNS 架构（改动网络相关内容前必须理解）：
   ```
   局域网设备 DNS → AdGuardHome:53 → mosdns:5335（分流/去广告）→ 上游
-  passwall2 + xray 透明代理（另含 sing-box、shadowsocks-rust 客户端核心）；dnsmasq 监听 1745（53 只留给 AdGuardHome）
+  passwall2 + xray 透明代理；dnsmasq 监听 1745（53 只留给 AdGuardHome）
   bandix（eBPF）监控 eth0 的流量/连接/DNS，API 只监听 127.0.0.1:8686
   WireGuard 服务端：kmod-wireguard + wireguard-tools + luci-proto-wireguard，接口与密钥在 LuCI 建
   ```
@@ -122,7 +122,7 @@
 
 ## 8. 踩坑备忘（改相关区域前先看）
 
-- flippy 打包会把 `system.zram_size_mb` 置 0 → `99-zram-size` 恢复 256MB 兜底，`zzz-zram-tuning`（文件名排序在其后）按物理内存 25% 覆盖并设 `zram_comp_algo='lz4'`。
+- flippy 打包会把 `system.zram_size_mb` 置 0 → `99-zram-size` 恢复 256MB。
 - irqbalance 与 flippy `S95done` 静态中断分配冲突 → 已移除，用 `S96-rps-4cpu` 做 4 核 RPS 分摊（覆盖 ophub 注入的 S95done）。
 - LuCI 在线用户统计只认 `br-lan`，N1 是 eth0 → diy.sh 已修；进程页 rpcd popen 有竞态 → 已替换为 /proc 直读。
 - 复制自 git 子目录的 LuCI 包无 `.git` 会让 luci.mk 回退版本号 0 → `fix_luci_po_version` 补 `PKG_PO_VERSION`；连 `PKG_VERSION` 都没有的包（如 OneNAS luci-app-vlmcsd）需先补 `PKG_VERSION` 再走该函数。
@@ -133,7 +133,8 @@
 - `kmod-ipv6`、`addition-trans-zh`、`CONFIG_DNSMASQ_NFTSET`、`CONFIG_LUCI_LANG_en` 等是死符号，勿再加回。
 - 25.12 的 `LIBCURL_HTTP3` 替代了废弃的 NGHTTP3/NGTCP2 符号。
 - sbwml 的 ngtcp2/nghttp3 替换官方 feed 时必须成对（ngtcp2 新版依赖新版 libnghttp3），只换一个会断 curl 的 HTTP3 依赖链。
-- rust 工具链用 `sbwml/packages_lang_rust` 覆盖官方 `feeds/packages/lang/rust`：两版都开 `llvm.download-ci-llvm=true`，但官方版随版本升级后旧 LLVM CI artifacts 会被上游清理（404）导致编译中断，sbwml 版持续维护其可用性。shadowsocks-rust 经 `PKG_BUILD_DEPENDS:=rust/host` 拉入，且其 Makefile 硬引用 `feeds/packages/lang/rust/rust-package.mk`，rust 必须先落盘；首次构建需全量编译 rust 并下载 LLVM，是 CI 耗时的主要来源。sbwml 版 Makefile 比官方少 `RUSTC_TARGET_RUSTFLAGS` 传递与 `--ci false` 两行，均只对 PowerPC 及 x.py 宽松模式有意义，对 aarch64 无影响，不做补丁。
+- easytier 用上游 release 的预编译 aarch64 二进制（`Build/Compile` 为空，**无需本地 rust 工具链**）。上游 Makefile 原用裸 wget 下载，diy.sh 落盘时改造为标准 `PKG_SOURCE`/`PKG_HASH`（`make download` 缓存 + sha256 校验，`Build/Prepare` 改为 unzip dl 缓存）；`PKG_HASH` 由 §4.3 按当前 tag 计算写入，获取失败置 skip，包内写死 2.7.0 资产 hash 作取不到 tag 时的兜底。
+- luci-app-easytier 是 Lua 版前端：依赖 luci-compat（25.12 的 luci.mk 仍支持 luasrc）；`LUCI_DEPENDS` 不含 `+easytier`，主程序必须在 .config 显式选中，否则只有界面没有核心；菜单写死在 `luasrc/controller/easytier.lua`（自建 admin/vpn 分类），diy.sh §5 sed 归位 network 并删该分类；版本号同时写死在两个 Makefile 与 init.d 兜底 tag，由 diy.sh §4.3 三处同步。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
 
 ## 9. 沟通约定

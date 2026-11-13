@@ -82,22 +82,22 @@ case "$build_date" in
     *) log "WARN: 无法获取源码最后提交日期，回退为构建当天日期"; build_date="$(date +%Y%m%d)" ;;
 esac
 
-# 版本描述统一以 OpenWrt 开头（LuCI 固件版本行取自 os-release 的 OPENWRT_RELEASE）；发行版标识 NAME/ID/DISTRIB_ID 仍是 ImmortalWrt
+# 版本描述统一以小写 openwrt 开头（LuCI 固件版本行取自 os-release 的 OPENWRT_RELEASE）；发行版标识 NAME/ID/DISTRIB_ID 仍是 ImmortalWrt
 rel_file="package/base-files/files/etc/openwrt_release"
 if [ -f "$rel_file" ] && grep -q "^DISTRIB_DESCRIPTION='%D %V %C'$" "$rel_file"; then
-    sed -i "s|^DISTRIB_DESCRIPTION='%D %V %C'$|DISTRIB_DESCRIPTION='OpenWrt %V ${build_date} %C'|" "$rel_file"
+    sed -i "s|^DISTRIB_DESCRIPTION='%D %V %C'$|DISTRIB_DESCRIPTION='openwrt %V ${build_date} %C'|" "$rel_file"
 else
     log "WARN: openwrt_release 模板格式不符，跳过版本描述修改"
 fi
 
 os_file="package/base-files/files/usr/lib/os-release"
 if [ -f "$os_file" ] && grep -q '^OPENWRT_RELEASE="%D %V %C"$' "$os_file"; then
-    sed -i "s|^OPENWRT_RELEASE=\"%D %V %C\"$|OPENWRT_RELEASE=\"OpenWrt %V ${build_date} %C\"|" "$os_file"
+    sed -i "s|^OPENWRT_RELEASE=\"%D %V %C\"$|OPENWRT_RELEASE=\"openwrt %V ${build_date} %C\"|" "$os_file"
 else
     log "WARN: os-release 模板格式不符，跳过版本描述修改"
 fi
 if [ -f "$os_file" ] && grep -q '^PRETTY_NAME="%D %V"$' "$os_file"; then
-    sed -i 's|^PRETTY_NAME="%D %V"$|PRETTY_NAME="OpenWrt %V"|' "$os_file"
+    sed -i 's|^PRETTY_NAME="%D %V"$|PRETTY_NAME="openwrt %V"|' "$os_file"
 else
     log "WARN: os-release PRETTY_NAME 模板格式不符，跳过版本描述修改"
 fi
@@ -323,8 +323,6 @@ clone_bg https://github.com/OneNAS-space/luci-app-vlmcsd clone/vlmcsdluci ""
 clone_bg https://github.com/sbwml/luci-app-airconnect clone/airconnect ""
 clone_bg https://github.com/sbwml/package_libs_ngtcp2 clone/ngtcp2 ""
 clone_bg https://github.com/sbwml/package_libs_nghttp3 clone/nghttp3 ""
-# rust 工具链：官方版升级后旧 LLVM CI artifacts 被上游清理会 404，sbwml 版保持其可用
-clone_bg https://github.com/sbwml/packages_lang_rust clone/rust ""
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -332,10 +330,6 @@ log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 # golang 工具链 -> feeds
 rm -rf feeds/packages/lang/golang
 cp -rf clone/golang feeds/packages/lang/golang
-
-# rust 工具链 -> feeds（shadowsocks-rust 的 rust-package.mk 硬引用此路径）
-rm -rf feeds/packages/lang/rust
-cp -rf clone/rust feeds/packages/lang/rust
 
 # passwall 组件
 rm -rf package/passwall_packages
@@ -437,6 +431,52 @@ fi
 rm -rf package/easytier package/luci-app-easytier
 cp -rf clone/easytier/easytier package/easytier
 cp -rf clone/easytier/luci-app-easytier package/luci-app-easytier
+
+# 上游 Makefile 用裸 wget 下载二进制，改造为标准 PKG_SOURCE/PKG_HASH（make download 阶段缓存 + sha256 校验）；
+# PKG_HASH 为 2.7.0 资产值，仅当 §4.3 取不到最新 tag 时兜底，正常构建会被 §4.3 按当前 tag 覆盖
+easytier_mk="package/easytier/Makefile"
+if [ -f "$easytier_mk" ]; then
+    python3 - "$easytier_mk" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+
+pkg_hash = "8abc5d850ad140cd071475a2dd2b4b135f7e0e8b7271897f01fc08a5c0a9c1b0"
+src_lines = [
+    "PKG_SOURCE:=easytier-linux-$(APP_ARCH)-v$(PKG_VERSION).zip",
+    "PKG_SOURCE_URL:=https://github.com/EasyTier/EasyTier/releases/download/v$(PKG_VERSION)/",
+    "PKG_HASH:=" + pkg_hash,
+]
+new_prepare = (
+    "define Build/Prepare\n"
+    "\tmkdir -p $(PKG_BUILD_DIR)\n"
+    "\tunzip -o -j $(DL_DIR)/$(PKG_SOURCE) -d $(PKG_BUILD_DIR)\n"
+    "endef"
+)
+
+if "PKG_SOURCE_URL" not in text:
+    out = []
+    for line in text.split("\n"):
+        out.append(line)
+        if line.startswith("PKG_VERSION:="):
+            out.extend(src_lines)
+    text = "\n".join(out)
+
+if "wget" in text:
+    start = text.index("define Build/Prepare")
+    end = text.index("endef", start) + len("endef")
+    text = text[:start] + new_prepare + text[end:]
+
+open(path, "w", encoding="utf-8").write(text)
+PY
+    if grep -q 'PKG_SOURCE_URL' "$easytier_mk" && grep -q '^PKG_HASH:=' "$easytier_mk" \
+        && ! grep -q 'wget' "$easytier_mk"; then
+        log "easytier 二进制下载已改造为标准 PKG_SOURCE/PKG_HASH"
+    else
+        log "WARN: easytier Makefile 下载改造未完全生效，请人工核对"
+    fi
+fi
 
 # vlmcsd（KMS 激活）+ LuCI 前端
 rm -rf package/vlmcsd package/luci-app-vlmcsd
@@ -641,9 +681,17 @@ if [ -n "$easytier_tag" ]; then
     if [ -f "$easytier_init" ]; then
         sed -i "s|tag=\"v[0-9.]*\"|tag=\"v${easytier_ver}\"|" "$easytier_init"
     fi
+    easytier_hash="$(fetch_sha256 "https://github.com/EasyTier/EasyTier/releases/download/v${easytier_ver}/easytier-linux-aarch64-v${easytier_ver}.zip" || true)"
+    if [ -n "$easytier_hash" ]; then
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${easytier_hash}|" package/easytier/Makefile
+        easytier_hash_ok="已按 ${easytier_tag} 更新"
+    else
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=skip|" package/easytier/Makefile
+        easytier_hash_ok="获取失败，置 skip（跳过校验）"
+    fi
     if grep -qx "PKG_VERSION:=${easytier_ver}" package/easytier/Makefile \
         && grep -qx "PKG_VERSION:=${easytier_ver}" package/luci-app-easytier/Makefile; then
-        log "easytier -> ${easytier_tag}"
+        log "easytier -> ${easytier_tag}（PKG_HASH ${easytier_hash_ok}）"
     else
         log "WARN: easytier 版本写入未全部生效，请人工核对两个 Makefile"
     fi
@@ -782,7 +830,7 @@ EOF
 cat > files/etc/uci-defaults/99-zram-size <<'EOF'
 #!/bin/sh
 # flippy 打包会把 system.zram_size_mb 置 0，S15zram 随即建立 0 字节设备失败（swap 恒为 0）
-# 恢复为 256MB 兜底：zram 空闲时几乎不占内存；zzz-zram-tuning 会按物理内存 25% 覆盖此值
+# 恢复为 256MB：zram 空闲时几乎不占内存，仅在内存压力时作交换兜底
 if uci -q get system.@system[0] >/dev/null 2>&1; then
 	uci -q set system.@system[0].zram_size_mb='256'
 	uci -q commit system
@@ -791,22 +839,6 @@ exit 0
 EOF
 
 chmod 755 files/etc/uci-defaults/99-zram-size
-
-cat > files/etc/uci-defaults/zzz-zram-tuning <<'EOF'
-#!/bin/sh
-# 文件名排序保证在 99-zram-size 之后执行：按物理内存 25% 覆盖固定 256MB，压缩算法用 lz4（kmod-lib-lz4 已内置）
-mem_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-[ -n "$mem_total" ] || exit 0
-zram_size=$(awk "BEGIN {print int($mem_total * 0.25 / 1024)}")
-if uci -q get system.@system[0] >/dev/null 2>&1; then
-	uci -q set system.@system[0].zram_size_mb="$zram_size"
-	uci -q set system.@system[0].zram_comp_algo='lz4'
-	uci -q commit system
-fi
-exit 0
-EOF
-
-chmod 755 files/etc/uci-defaults/zzz-zram-tuning
 
 cat > files/etc/uci-defaults/99-firewall-flow-offload <<'EOF'
 #!/bin/sh
