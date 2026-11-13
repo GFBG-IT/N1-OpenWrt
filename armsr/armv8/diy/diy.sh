@@ -317,12 +317,14 @@ clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
 # bandix 固定 tag：包内 PKG_VERSION 与二进制资产 hash 绑死，跟 main 会在上游发版前 404
 clone_bg https://github.com/timsaya/openwrt-bandix clone/bandix v0.12.12
 clone_bg https://github.com/timsaya/luci-app-bandix clone/bandixluci v0.12.12-r5
-clone_bg https://github.com/rabbitrogi/luci-app-zerotier clone/zerotierluci ""
+clone_bg https://github.com/EasyTier/luci-app-easytier clone/easytier ""
 clone_bg https://github.com/OneNAS-space/vlmcsd clone/vlmcsd ""
 clone_bg https://github.com/OneNAS-space/luci-app-vlmcsd clone/vlmcsdluci ""
 clone_bg https://github.com/sbwml/luci-app-airconnect clone/airconnect ""
 clone_bg https://github.com/sbwml/package_libs_ngtcp2 clone/ngtcp2 ""
 clone_bg https://github.com/sbwml/package_libs_nghttp3 clone/nghttp3 ""
+# rust 工具链：官方版升级后旧 LLVM CI artifacts 被上游清理会 404，sbwml 版保持其可用
+clone_bg https://github.com/sbwml/packages_lang_rust clone/rust ""
 wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
@@ -330,6 +332,10 @@ log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 # golang 工具链 -> feeds
 rm -rf feeds/packages/lang/golang
 cp -rf clone/golang feeds/packages/lang/golang
+
+# rust 工具链 -> feeds（shadowsocks-rust 的 rust-package.mk 硬引用此路径）
+rm -rf feeds/packages/lang/rust
+cp -rf clone/rust feeds/packages/lang/rust
 
 # passwall 组件
 rm -rf package/passwall_packages
@@ -427,9 +433,10 @@ else
     log "WARN: luci-app-bandix 的 PKG_PO_VERSION 未固定，i18n 包版本可能回退为 0"
 fi
 
-# luci-app-zerotier（ZeroTier JS 版管理界面，依赖官方 feed 的 zerotier）
-rm -rf package/luci-app-zerotier
-cp -rf clone/zerotierluci package/luci-app-zerotier
+# easytier 主程序（预编译 aarch64 二进制）+ Lua 版 LuCI 前端
+rm -rf package/easytier package/luci-app-easytier
+cp -rf clone/easytier/easytier package/easytier
+cp -rf clone/easytier/luci-app-easytier package/luci-app-easytier
 
 # vlmcsd（KMS 激活）+ LuCI 前端
 rm -rf package/vlmcsd package/luci-app-vlmcsd
@@ -449,7 +456,7 @@ cp -rf clone/nghttp3 feeds/packages/libs/nghttp3
 # ophub 的 remake 打包时从官方仓库实时下载插件脚本覆盖 /usr/sbin，构建期对 feeds 层的补丁不生效；
 # 升级后的自愈由 99-adguardhome-paths 在首启完成（见 §6），此处不再打 ophub 脚本补丁
 
-log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix / zerotier / vlmcsd / airconnect / ngtcp2+nghttp3）"
+log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix / easytier / vlmcsd / airconnect / ngtcp2+nghttp3）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 github_latest_tag() {
@@ -620,6 +627,30 @@ if [ -n "$ddnsto_ver" ]; then
     fi
 fi
 
+# easytier：预编译二进制，版本号同时写死在两个 Makefile 与 init.d 兜底值里，三处必须同步；
+# 取不到时包内自带 2.7.0 默认值，编译仍可继续
+easytier_tag="$(github_latest_tag https://github.com/EasyTier/EasyTier.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+if [ -n "$easytier_tag" ]; then
+    easytier_ver="${easytier_tag#v}"
+    for mk in package/easytier/Makefile package/luci-app-easytier/Makefile; do
+        if [ -f "$mk" ]; then
+            sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${easytier_ver}|" "$mk"
+        fi
+    done
+    easytier_init="package/luci-app-easytier/root/etc/init.d/easytier"
+    if [ -f "$easytier_init" ]; then
+        sed -i "s|tag=\"v[0-9.]*\"|tag=\"v${easytier_ver}\"|" "$easytier_init"
+    fi
+    if grep -qx "PKG_VERSION:=${easytier_ver}" package/easytier/Makefile \
+        && grep -qx "PKG_VERSION:=${easytier_ver}" package/luci-app-easytier/Makefile; then
+        log "easytier -> ${easytier_tag}"
+    else
+        log "WARN: easytier 版本写入未全部生效，请人工核对两个 Makefile"
+    fi
+else
+    log "WARN: 无法获取 easytier 版本，使用包内默认版本"
+fi
+
 # tcping：跟随 git HEAD
 tcping_commit="$(git ls-remote https://github.com/Lienol/tcping.git HEAD 2>/dev/null | awk '{print $1; exit}')"
 if [ -n "$tcping_commit" ]; then
@@ -648,7 +679,6 @@ fix_luci_po_version package/openlist2/luci-app-openlist2/Makefile
 fix_luci_po_version package/ddnstox/luci-app-ddnstox/Makefile
 fix_luci_po_version package/passwall2/luci-app-passwall2/Makefile
 fix_luci_po_version feeds/luci/applications/luci-app-amlogic/Makefile
-fix_luci_po_version package/luci-app-zerotier/Makefile
 fix_luci_po_version package/luci-app-airconnect/Makefile
 
 # OneNAS 的 luci-app-vlmcsd 没有 PKG_VERSION 行，无 .git 拷贝目录下 i18n 包版本会回退为 0
@@ -689,18 +719,19 @@ else
     log "WARN: 未找到 feeds luci-app-ksmbd，跳过菜单调整"
 fi
 
-zerotier_menu="package/luci-app-zerotier/root/usr/share/luci/menu.d/luci-app-zerotier.json"
-if [ -f "$zerotier_menu" ]; then
-    sed -i 's|admin/vpn/zerotier|admin/network/zerotier|' "$zerotier_menu"
-    # zerotier 挪走后自建的 admin/vpn 一级分类成空目录，一并删除
-    sed -i '/^\t"admin\/vpn": {$/,/^\t},$/d' "$zerotier_menu"
-    if grep -q 'admin/network/zerotier' "$zerotier_menu" && ! grep -q '"admin/vpn"' "$zerotier_menu"; then
-        log "zerotier 菜单已移至 network 目录"
+# easytier 是 Lua 版 LuCI，菜单在 controller 里写死 admin/vpn，改到 network 并删掉自建的 VPN 顶级分类
+easytier_ctrl="package/luci-app-easytier/luasrc/controller/easytier.lua"
+if [ -f "$easytier_ctrl" ]; then
+    sed -i 's|"admin", "vpn", "easytier"|"admin", "network", "easytier"|g' "$easytier_ctrl"
+    sed -i '/entry({"admin", "vpn"}, firstchild(), "VPN", 45)/d' "$easytier_ctrl"
+    if grep -q '"admin", "network", "easytier"' "$easytier_ctrl" \
+        && ! grep -q 'entry({"admin", "vpn"}, firstchild()' "$easytier_ctrl"; then
+        log "easytier 菜单已移至 network 目录"
     else
-        log "WARN: zerotier 菜单调整未完全生效，请人工核对菜单 JSON"
+        log "WARN: easytier 菜单调整未完全生效，请人工核对 controller"
     fi
 else
-    log "WARN: 未找到 package/luci-app-zerotier，跳过菜单调整"
+    log "WARN: 未找到 package/luci-app-easytier controller，跳过菜单调整"
 fi
 log "LuCI 菜单分类调整完成"
 

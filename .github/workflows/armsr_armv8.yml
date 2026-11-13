@@ -156,10 +156,12 @@ jobs:
           etc/ssh/ssh_config \
           etc/uci-defaults/99-mitigations-off \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
+          usr/bin/easytier-core usr/bin/easytier-cli usr/bin/easytier-web \
+          etc/config/easytier etc/init.d/easytier \
           usr/bin/AdGuardHome etc/config/AdGuardHome etc/init.d/AdGuardHome \
           usr/bin/bandix etc/config/bandix etc/init.d/bandix \
           usr/libexec/rpcd/luci.bandix usr/share/luci/menu.d/luci-app-bandix.json \
-          usr/bin/xray usr/bin/sing-box \
+          usr/bin/xray usr/bin/sing-box usr/bin/sslocal usr/bin/ssserver \
           usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
           usr/bin/wg etc/modules.d/wireguard \
           usr/libexec/mihomo \

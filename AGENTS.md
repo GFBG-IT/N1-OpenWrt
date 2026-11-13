@@ -13,7 +13,7 @@
 - 代理与 DNS 架构（改动网络相关内容前必须理解）：
   ```
   局域网设备 DNS → AdGuardHome:53 → mosdns:5335（分流/去广告）→ 上游
-  passwall2 + xray 透明代理；dnsmasq 监听 1745（53 只留给 AdGuardHome）
+  passwall2 + xray 透明代理（另含 sing-box、shadowsocks-rust 客户端核心）；dnsmasq 监听 1745（53 只留给 AdGuardHome）
   bandix（eBPF）监控 eth0 的流量/连接/DNS，API 只监听 127.0.0.1:8686
   WireGuard 服务端：kmod-wireguard + wireguard-tools + luci-proto-wireguard，接口与密钥在 LuCI 建
   ```
@@ -133,6 +133,7 @@
 - `kmod-ipv6`、`addition-trans-zh`、`CONFIG_DNSMASQ_NFTSET`、`CONFIG_LUCI_LANG_en` 等是死符号，勿再加回。
 - 25.12 的 `LIBCURL_HTTP3` 替代了废弃的 NGHTTP3/NGTCP2 符号。
 - sbwml 的 ngtcp2/nghttp3 替换官方 feed 时必须成对（ngtcp2 新版依赖新版 libnghttp3），只换一个会断 curl 的 HTTP3 依赖链。
+- rust 工具链用 `sbwml/packages_lang_rust` 覆盖官方 `feeds/packages/lang/rust`：两版都开 `llvm.download-ci-llvm=true`，但官方版随版本升级后旧 LLVM CI artifacts 会被上游清理（404）导致编译中断，sbwml 版持续维护其可用性。shadowsocks-rust 经 `PKG_BUILD_DEPENDS:=rust/host` 拉入，且其 Makefile 硬引用 `feeds/packages/lang/rust/rust-package.mk`，rust 必须先落盘；首次构建需全量编译 rust 并下载 LLVM，是 CI 耗时的主要来源。sbwml 版 Makefile 比官方少 `RUSTC_TARGET_RUSTFLAGS` 传递与 `--ci false` 两行，均只对 PowerPC 及 x.py 宽松模式有意义，对 aarch64 无影响，不做补丁。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
 
 ## 9. 沟通约定
