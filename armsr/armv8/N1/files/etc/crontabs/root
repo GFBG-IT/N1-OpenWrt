@@ -1,1 +1,3 @@
 0 4 * * * fstrim -a
+# passwall2 每天 9:00 更新 /usr/share/v2ray geo 数据，9:30 重启 mosdns 重新 dump 共享的 txt 规则
+30 9 * * * /etc/init.d/mosdns restart

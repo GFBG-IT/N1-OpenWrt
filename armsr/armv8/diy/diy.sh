@@ -9,7 +9,7 @@ set -euo pipefail
 
 log() { printf '[diy] %s\n' "$*"; }
 
-# 克隆第三方仓库，失败重试 3 次；第 4 参为稀疏检出目录列表（空格分隔，用于包多的大仓库）
+# 第 4 参为稀疏检出目录列表（空格分隔，用于包多的大仓库）
 clone_repo() {
     local repo="$1" dest="$2" branch="${3:-}" sparse_dirs="${4:-}" i
     local args=(--depth=1 --single-branch -q)
@@ -208,7 +208,7 @@ fi
 # process_list() 旧实现 popen 读 busybox top 有竞态且 VSZ 缩写丢进程，改为 /proc 直读
 luci_sys="feeds/luci/modules/luci-base/ucode/sys.uc"
 if [ -f "$luci_sys" ] && grep -q '^export function process_list() {' "$luci_sys"; then
-    python3 - "$luci_sys" <<'PY'
+    if python3 - "$luci_sys" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -265,7 +265,6 @@ new_func = r'''export function process_list() {
 		return (+f[11] ?? 0) + (+f[12] ?? 0);
 	};
 
-	/* 第一次采样：各进程 CPU ticks 与系统总 ticks */
 	const first = {};
 
 	for (let pid in lsdir('/proc') ?? [])
@@ -287,7 +286,6 @@ new_func = r'''export function process_list() {
 
 	const dtot = (cpu_total() - t0) || 1;
 
-	/* 第二次采样：组装进程表 */
 	for (let pid in lsdir('/proc') ?? []) {
 		if (!match(pid, /^[0-9]+$/))
 			continue;
@@ -347,7 +345,11 @@ end = text.index("\n};", start) + len("\n};")
 text = text[:start] + new_func + text[end:]
 open(path, "w", encoding="utf-8").write(text)
 PY
-    log "process_list 已替换为 /proc 直读实现"
+    then
+        log "process_list 已替换为 /proc 直读实现"
+    else
+        log "WARN: process_list 替换失败（上游漂移），保留原实现"
+    fi
 else
     log "WARN: 未找到 LuCI sys.uc 的 process_list，跳过替换"
 fi
@@ -412,14 +414,25 @@ log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 # golang 工具链最先落盘 -> feeds：后续 Go 组件（mosdns/openlist2/ddnstox 等）编译时依赖最新工具链
 install_pkg clone/golang feeds/packages/lang/golang
 
-# passwall 组件
 install_pkg clone/passwall_packages package/passwall_packages
 install_pkg clone/passwall2 package/passwall2
 rm -rf package/passwall_packages/chinadns-ng
 # chinadns-ng 非必需：passwall2 没有它时会回退到 dnsmasq
 sed -i '/^[[:space:]]*select PACKAGE_chinadns-ng$/d' package/passwall2/luci-app-passwall2/Makefile
 
-# mosdns
+# passwall2 默认不带规则更新 cron（update_week_mode 为空时 start_crontab 跳过）——固化每日 09:00 更新 geo，
+# mosdns 9:30 的重启 cron 依赖它；0_default_config 仅在 /etc/config/passwall2 为空时落盘，升级保留配置不受影响
+P2_DEFAULT=package/passwall2/luci-app-passwall2/root/usr/share/passwall2/0_default_config
+if [ -f "$P2_DEFAULT" ] && grep -q '^config global_rules$' "$P2_DEFAULT"; then
+    if ! grep -q 'update_week_mode' "$P2_DEFAULT"; then
+        sed -i "s|^\(\toption geosite_update '1'\)$|\1\n\toption update_week_mode '7'\n\toption update_time_mode '9:00'|" "$P2_DEFAULT"
+    fi
+    grep -q "option update_week_mode '7'" "$P2_DEFAULT" || { log "ERROR: passwall2 0_default_config 写入 geo 更新计划失败"; exit 1; }
+else
+    log "ERROR: passwall2 0_default_config 不存在或结构漂移"
+    exit 1
+fi
+
 install_pkg clone/mosdns package/mosdns
 
 # openlist2（网盘挂载）
@@ -437,7 +450,6 @@ install_pkg clone/nikki/mihomo-meta package/mihomo-meta
 mkdir -p feeds/packages/utils
 install_pkg clone/autocore feeds/packages/utils/autocore
 
-# luci-app-amlogic（晶晨宝盒）
 install_pkg clone/amlogic/luci-app-amlogic feeds/luci/applications/luci-app-amlogic
 
 # argon 3.0 已内置设置，不再引入旧版 argon-config（与主题包文件冲突）
@@ -506,7 +518,7 @@ install_pkg clone/easytier/luci-app-easytier package/luci-app-easytier
 # PKG_HASH 为回退自洽组合的资产值，正常构建会被 §4.3 按当前 tag 覆盖
 easytier_mk="package/easytier/Makefile"
 if [ -f "$easytier_mk" ]; then
-    EASYTIER_FALLBACK_HASH="$EASYTIER_FALLBACK_HASH" python3 - "$easytier_mk" <<'PY'
+    EASYTIER_FALLBACK_HASH="$EASYTIER_FALLBACK_HASH" python3 - "$easytier_mk" <<'PY' || log "WARN: easytier Makefile 改造脚本执行失败"
 import os
 import sys
 
@@ -584,6 +596,7 @@ wait_stage3() {
         if ! wait "$pid"; then
             case "$name" in
                 xray|mihomo|agh) log "ERROR: ${name} 组件版本更新失败，中止编译"; exit 1 ;;
+                *) log "WARN: ${name} 组件版本更新任务失败，保留仓库自带版本" ;;
             esac
         fi
     done
@@ -636,7 +649,6 @@ stage3_openlist() {
 }
 stage3_bg openlist stage3_openlist
 
-# sing-box：最新正式 tag（passwall_packages 使用）
 stage3_singbox() {
     update_pkg_version "sing-box" \
         https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' \
@@ -692,7 +704,6 @@ stage3_agh() {
 }
 stage3_bg agh stage3_agh
 
-# v2ray-geodata：passwall 包 + Loyalsoldier 最新数据
 stage3_geodata() {
     local geoip_tag geosite_tag geoip_hash geosite_hash
     geoip_tag="$(github_latest_tag https://github.com/Loyalsoldier/geoip.git '*' '^[0-9]{12}$' || true)"
@@ -931,6 +942,34 @@ EOF
 
 chmod 755 files/etc/uci-defaults/99-firewall-flow-offload
 
+cat > files/etc/uci-defaults/99-firewall-include-cleanup <<'EOF'
+#!/bin/sh
+# 清理升级遗留的失效 include（passwall1/momo/zerotier 等）：fw4 对 path 指向不存在文件的 include
+# 只警告并忽略，残留段每次 reload 都刷警告。passwall2 的 include 指向 /var/etc/passwall2.include
+# （tmpfs 运行期生成，开机时不存在），/var、/tmp 开头的路径一律保留
+[ -f /etc/config/firewall ] || exit 0
+
+i=0
+while uci -q get firewall.@include[$i] >/dev/null 2>&1; do
+	path=$(uci -q get firewall.@include[$i].path)
+	case "$path" in
+		""|/var/*|/tmp/*)
+			i=$((i + 1))
+			;;
+		*)
+			if [ -f "$path" ]; then
+				i=$((i + 1))
+			else
+				uci -q delete firewall.@include[$i]
+			fi
+			;;
+	esac
+done
+uci -q commit firewall
+exit 0
+EOF
+
+chmod 755 files/etc/uci-defaults/99-firewall-include-cleanup
 
 cat > files/etc/uci-defaults/99-adguardhome-paths <<'EOF'
 #!/bin/sh
@@ -989,6 +1028,8 @@ uci -q set mosdns.config.dns_leak='1'
 uci -q set mosdns.config.enable_ecs_remote='1'
 uci -q set mosdns.config.stats_collector='0'
 uci -q set mosdns.config.apple_optimization='1'
+# 不开时 v2dat_dump 对 netflix/disney/hulu 只写空占位 txt，流媒体分流空转
+uci -q set mosdns.config.custom_stream_media_dns='1'
 uci -q set mosdns.config.reject_type65='1'
 uci -q set mosdns.config.cache='0'
 uci -q set mosdns.config.minimal_ttl='0'
@@ -1166,7 +1207,6 @@ chmod 755 files/etc/uci-defaults/99-openssh-sshd-user
 # 去掉 dircolors 与 /etc/bashrc 引用，busybox 环境不存在这两者）
 mkdir -p files/root
 cat > files/root/.bashrc <<'EOF'
-# root shell aliases
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
@@ -1177,7 +1217,6 @@ alias ll='ls -l --color=auto'
 EOF
 
 cat > files/root/.bash_profile <<'EOF'
-# bash 登录时加载 .bashrc
 [ -f ~/.bashrc ] && . ~/.bashrc
 EOF
 

@@ -1,4 +1,4 @@
-；；#!/bin/sh
+#!/bin/sh
 # 覆盖 flippy S95done（ophub 打包注入）的 RPS 设置：
 # S95done 把 eth0 的 RPS 设为 0x3（收包软中断仅摊到 CPU0/1），
 # 本脚本在其后执行，改为 0xf 由 4 核分摊，降低收包积压与 RX FIFO 溢出。

@@ -69,7 +69,7 @@
 **并行约束**（stage3 任务强制遵守）：
 
 - 各任务相互独立：**禁止跨任务写同一文件、禁止依赖其他任务的执行顺序**；任务写的目标 Makefile 必须已在 §4.2 落盘。
-- 主脚本串行段不得并发修改任何 stage3 任务正在写的文件（AGH 的"feeds 精简"块与 stage3_agh 写同一 Makefile，靠时序隐式规避，改动其中任何一处前必须先消除该隐式依赖）。
+- 主脚本串行段不得并发修改任何 stage3 任务正在写的文件（AGH 的"feeds 精简"块已并入 stage3_agh 任务内串行执行，无跨任务竞态；若把该块移回主脚本会与 stage3_agh 竞态写同一 Makefile，必须先消除该依赖）。
 - 后台任务中的 `exit 1` 只退出子 shell——**核心组件失败必须靠任务返回码 + `wait_stage3` 的 critical 名单中止编译**；新增核心组件须同步把名字加进该 case。
 - 后台日志交错属正常，CI 流式日志内容齐全即可。
 
@@ -153,6 +153,9 @@
 - easytier 用上游 release 的预编译 aarch64 二进制（`Build/Compile` 为空，**无需本地 rust 工具链**）。上游 Makefile 原用裸 wget 下载，diy.sh 落盘时改造为标准 `PKG_SOURCE`/`PKG_HASH`（`make download` 缓存 + sha256 校验，`Build/Prepare` 改为 unzip dl 缓存）；`PKG_SOURCE` 中架构必须**字面写 aarch64**——上游的 `APP_ARCH` 由包内 `ifeq $(ARCH)` 定义，仅编译期子 make 生效，download/metadata 阶段展开为空（曾致 CI 下载 `easytier-linux--v2.7.0.zip` 404）。版本与 hash **永远成对**：新 tag 资产获取失败时整体回退到 `EASYTIER_FALLBACK_VER/HASH` 自洽组合（单一来源，§4.2 改造与 §4.3 回退共用），不置 skip、不做无校验下载。
 - luci-app-easytier 是 Lua 版前端：依赖 luci-compat（25.12 的 luci.mk 仍支持 luasrc）；`LUCI_DEPENDS` 不含 `+easytier`，主程序必须在 .config 显式选中，否则只有界面没有核心；菜单写死在 `luasrc/controller/easytier.lua`（自建 admin/vpn 分类），diy.sh §5 sed 归位 network 并删该分类；版本号同时写死在两个 Makefile 与 init.d 兜底 tag，由 diy.sh §4.3 三处同步。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
+- passwall2（main 重构版）默认配置靠 uci-defaults 在首启 `cp 0_default_config` 落盘（`[ ! -s ]` 才覆盖），且该 uci-defaults 文件名排序在所有 `99-*` 之后 → 随固件固化的 passwall2 默认项只能构建期直接改 0_default_config（geo 每日更新计划已如此）。
+- mosdns 与 passwall2 的 geo 数据共用 `/usr/share/v2ray/`：passwall2 是唯一下载方（`global_rules.update_week_mode='7'` + `update_time_mode='9:00'`），mosdns 侧 `geo_auto_update` 必须保持 0；`custom_stream_media_dns` 不为 1 时 v2dat_dump 对 netflix/disney/hulu 只写空占位 txt；crontabs 里 9:30 重启 mosdns 依赖 passwall2 的 9:00 更新，mosdns init 只删含 `mosdns.uc` 的 cron 行、passwall2 `clean_crontab` 只删自己三条模式，该行两边都不会清。
+- fw4 对 include path 失效的段只警告并忽略；`99-firewall-include-cleanup` 按"path 文件不存在即删"清理升级残留，但 /var、/tmp 开头的运行期路径（如 passwall2 的 `/var/etc/passwall2.include`）开机时尚未生成，必须排除。
 
 ## 9. 沟通约定
 

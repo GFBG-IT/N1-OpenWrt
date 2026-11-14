@@ -146,11 +146,13 @@ jobs:
           etc/uci-defaults/99-system-ntp \
           etc/uci-defaults/99-root-shell-bash \
           etc/uci-defaults/99-firewall-flow-offload \
+          etc/uci-defaults/99-firewall-include-cleanup \
           etc/uci-defaults/99-hold-core-packages \
           etc/uci-defaults/99-luci-lang \
           etc/uci-defaults/99-mosdns-tuning \
           etc/uci-defaults/99-zram-size \
           etc/rc.d/S96-rps-4cpu \
+          etc/crontabs/root \
           etc/ssh/sshd_config \
           etc/ssh/ssh_config \
           etc/uci-defaults/99-mitigations-off \
@@ -167,6 +169,7 @@ jobs:
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
           etc/init.d/passwall2 \
+          usr/share/passwall2/0_default_config \
           etc/init.d/nikki \
           usr/sbin/sshd \
           root/.bashrc root/.bash_profile \
@@ -180,7 +183,6 @@ jobs:
           echo "WARN: 有 ${missing} 个文件未打进镜像，详见上方 MISSING 列表（不影响发布）"
         fi
 
-        # AdGuardHome 核心版本断言
         agh_bin="$(grep -E '(^|/)usr/bin/AdGuardHome$' "$members" | head -n1)"
         if [ -n "$agh_bin" ]; then
           tar -xOzf "$rootfs" "$agh_bin" > /tmp/agh_bin 2>/dev/null
