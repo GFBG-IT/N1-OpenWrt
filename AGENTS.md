@@ -51,10 +51,27 @@
 - 所有 `set -euo pipefail` 下的改动要意识到**任何未兜底的命令失败都会中止编译**。
 - 修改 feeds / 上游文件必须三件套：`[ -f ... ]` 存在性判断 → 修改 → `grep` 校验修改生效；失败打 `WARN`（可跳过）或 `ERROR` + `exit 1`（必须成功）。
 - 对 ophub 插件脚本（`feeds/luci/applications/luci-app-amlogic/root/usr/sbin/openwrt-*`，上游 main 滚动更新）打补丁同样走三件套；锚点未命中属上游漂移，打 `WARN` 提示人工核对，不阻断编译。
-- **核心组件（xray、mihomo、AdGuardHome 等编译必需项）**：获取失败重试 3 次，仍失败才 `exit 1`；**非核心（openlist2、sing-box、geoview、ddnstox、geo 数据等）**：失败回退仓库自带版本，打 WARN 不阻断。
+- **核心组件失败语义**（§4.3 并行任务）：xray/mihomo 无回退源，获取失败中止编译；AdGuardHome 获取失败回退 feeds 自带版本继续编译（仅 feeds 包结构缺失才中止）；**非核心（openlist2、sing-box、geoview、ddnstox、geo 数据等）**：失败回退仓库自带版本，打 WARN 不阻断。
 - 外部仓库克隆统一走 `clone_bg` / `wait_clones` 并行机制（内含重试 3 次），不要新写串行 `git clone`。
 - 版本号只取正式 tag（`^v[0-9]+(\.[0-9]+)+$`），排除 alpha/rc；mihomo 用稳定版不引 alpha。
 - 注释遵循 4.5 注释规范：默认不加，必要才加。
+
+#### 组件引入与版本更新规范（§4 重构后的标准流程）
+
+新增组件按以下三步走，禁止另起炉灶写散装逻辑：
+
+1. **克隆（§4.1）**：加一行 `clone_bg <repo> clone/<名> <分支或tag>`，默认分支传 `""`。bandix 类"tag 即发布"的组件：在克隆前用 `github_latest_tag` 解析最新 tag（含 `-rN` 修订后缀需扩展正则），`ls-remote` 失败回退已知自洽 tag，§4.3 无需再做版本覆盖。
+2. **落盘（§4.2）**：一行 `install_pkg clone/<名> <目标路径>`；包的特殊后处理（sed / python 改造）紧跟落盘行。**golang 的落盘必须保持 §4.2 第一位**——后续 Go 组件（mosdns / openlist2 / ddnstox 等）编译时依赖最新工具链。
+3. **版本更新（§4.3）**二选一：
+   - **标准模式**（tag + hash → `PKG_VERSION`/`PKG_HASH`）：定义 `stage3_<名>()` 任务函数，内部一行调用 `update_pkg_version <名> <repo> <glob> <正则> <Makefile> <hash_url(%s=版本号)> <0|1>`，再加 `stage3_bg <名> stage3_<名>`。
+   - **特殊模式**（多变量 / 多文件 / 非 tag 来源，如 mihomo 四变量、AGH 重试、ddnstox 索引页、easytier 三处同步）：独立 `stage3_<名>()` 任务函数，逻辑从原实现逐字搬运（5.7 原则），失败打 WARN 后 `return 0`（核心失败 `return 1`）。
+
+**并行约束**（stage3 任务强制遵守）：
+
+- 各任务相互独立：**禁止跨任务写同一文件、禁止依赖其他任务的执行顺序**；任务写的目标 Makefile 必须已在 §4.2 落盘。
+- 主脚本串行段不得并发修改任何 stage3 任务正在写的文件（AGH 的"feeds 精简"块与 stage3_agh 写同一 Makefile，靠时序隐式规避，改动其中任何一处前必须先消除该隐式依赖）。
+- 后台任务中的 `exit 1` 只退出子 shell——**核心组件失败必须靠任务返回码 + `wait_stage3` 的 critical 名单中止编译**；新增核心组件须同步把名字加进该 case。
+- 后台日志交错属正常，CI 流式日志内容齐全即可。
 
 ### 4.2 .config
 
@@ -129,11 +146,11 @@
 - AdGuardHome keep.d 若保留二进制，配置升级时旧核心会覆盖新编译版 → init 已改为只带 configpath。
 - luci-app-amlogic 保配置升级会保留旧版 /etc/config（目录式旧 UCI 残留）→ `99-adguardhome-paths` 首启兜底；旧版升级脚本还会用符号链接把 `/usr/bin/AdGuardHome` 顶到数据分区 → 迁移块已由 diy.sh 删除。
 - ophub 升级备份清单（`openwrt-backup` 的 `BACKUP_LIST`）默认不含 `/etc/adguardhome`、`/etc/mosdns/rule`、`/usr/share/nlbwmon`、`/usr/share/bandix` → diy.sh 已打补丁补充；新增需跨升级保留的路径时同步扩展该补丁并更新 Verify 清单。
-- bandix 用上游 release 的预编译 aarch64-musl 二进制，版本与 `PKG_HASH` 写死在包内；目标换成 glibc 时资产名对不上，`make download` 会直接失败。
+- bandix 用上游 release 的预编译二进制 tar.gz（资产在 `timsaya/bandix` 仓库，包内 `PKG_HASH` 按 ARCH 分支写死；目标换成 glibc 时资产名对不上，`make download` 会直接失败）。diy.sh 动态克隆 `timsaya/openwrt-bandix` 与 `timsaya/luci-app-bandix` 最新 tag（含 `-rN` 包修订后缀，`sort -V` 可正确排序；ls-remote 失败回退 v0.12.12 系自洽 tag），tag 内版本与资产天然自洽，无需 §4.3 覆盖；克隆前用 HEAD 请求验证 aarch64 资产可下载（tag 与资产可能短暂不同步），失败回退 v0.12.12 自洽 tag。其资产名中的 `RUSTC_TARGET_ARCH` 由官方 rust feed 的 `rust-values.mk` 提供（依赖 `feeds/packages/lang/rust`，ImmortalWrt 25.12 自带），aarch64 展开为 `aarch64-unknown-linux-musl`。
 - `kmod-ipv6`、`addition-trans-zh`、`CONFIG_DNSMASQ_NFTSET`、`CONFIG_LUCI_LANG_en` 等是死符号，勿再加回。
 - 25.12 的 `LIBCURL_HTTP3` 替代了废弃的 NGHTTP3/NGTCP2 符号。
 - sbwml 的 ngtcp2/nghttp3 替换官方 feed 时必须成对（ngtcp2 新版依赖新版 libnghttp3），只换一个会断 curl 的 HTTP3 依赖链。
-- easytier 用上游 release 的预编译 aarch64 二进制（`Build/Compile` 为空，**无需本地 rust 工具链**）。上游 Makefile 原用裸 wget 下载，diy.sh 落盘时改造为标准 `PKG_SOURCE`/`PKG_HASH`（`make download` 缓存 + sha256 校验，`Build/Prepare` 改为 unzip dl 缓存）；`PKG_HASH` 由 §4.3 按当前 tag 计算写入，获取失败置 skip，包内写死 2.7.0 资产 hash 作取不到 tag 时的兜底。
+- easytier 用上游 release 的预编译 aarch64 二进制（`Build/Compile` 为空，**无需本地 rust 工具链**）。上游 Makefile 原用裸 wget 下载，diy.sh 落盘时改造为标准 `PKG_SOURCE`/`PKG_HASH`（`make download` 缓存 + sha256 校验，`Build/Prepare` 改为 unzip dl 缓存）；`PKG_SOURCE` 中架构必须**字面写 aarch64**——上游的 `APP_ARCH` 由包内 `ifeq $(ARCH)` 定义，仅编译期子 make 生效，download/metadata 阶段展开为空（曾致 CI 下载 `easytier-linux--v2.7.0.zip` 404）。版本与 hash **永远成对**：新 tag 资产获取失败时整体回退到 `EASYTIER_FALLBACK_VER/HASH` 自洽组合（单一来源，§4.2 改造与 §4.3 回退共用），不置 skip、不做无校验下载。
 - luci-app-easytier 是 Lua 版前端：依赖 luci-compat（25.12 的 luci.mk 仍支持 luasrc）；`LUCI_DEPENDS` 不含 `+easytier`，主程序必须在 .config 显式选中，否则只有界面没有核心；菜单写死在 `luasrc/controller/easytier.lua`（自建 admin/vpn 分类），diy.sh §5 sed 归位 network 并删该分类；版本号同时写死在两个 Makefile 与 init.d 兜底 tag，由 diy.sh §4.3 三处同步。
 - CI 里上游 HEAD 克隆 / codeload / sourceforge 偶发抖动导致构建变红，**重跑通常自愈**，先重跑再排查。
 

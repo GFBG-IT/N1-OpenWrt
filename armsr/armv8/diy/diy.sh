@@ -51,6 +51,80 @@ wait_clones() {
     fi
 }
 
+github_latest_tag() {
+    local repo="$1"
+    local glob="$2"
+    local regex="$3"
+    local i t
+    for i in 1 2 3; do
+        t="$(git ls-remote --tags --refs "$repo" "$glob" 2>/dev/null \
+            | sed -n 's#.*refs/tags/##p' \
+            | grep -E "$regex" \
+            | sort -V \
+            | tail -n1)"
+        if [ -n "$t" ]; then
+            printf '%s\n' "$t"
+            return 0
+        fi
+        log "WARN: 第 ${i}/3 次解析 ${repo} 的 tag 失败"
+        sleep 2
+    done
+    return 1
+}
+
+fetch_sha256() {
+    local url="$1"
+    local tmp hash
+    tmp="$(mktemp)"
+    if ! curl -fsSL --retry 3 --retry-all-errors "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    hash="$(sha256sum "$tmp" | awk '{print $1}')"
+    rm -f "$tmp"
+    printf '%s\n' "$hash"
+}
+
+install_pkg() {
+    rm -rf "$2"
+    cp -rf "$1" "$2"
+}
+
+update_pkg_version() {
+    local name="$1" repo="$2" glob="$3" regex="$4" mk="$5" hash_tpl="$6" critical="$7"
+    local tag ver hash
+
+    tag="$(github_latest_tag "$repo" "$glob" "$regex" || true)"
+    if [ -z "$tag" ]; then
+        if [ "$critical" = 1 ]; then
+            log "ERROR: 无法获取 ${name} 版本"
+            exit 1
+        fi
+        log "WARN: 无法获取 ${name} 版本，保留仓库自带版本"
+        return 1
+    fi
+
+    ver="${tag#v}"
+    hash="$(fetch_sha256 "${hash_tpl//%s/${ver}}" || true)"
+    if [ -z "$hash" ]; then
+        if [ "$critical" = 1 ]; then
+            log "ERROR: ${name} 源码下载失败"
+            exit 1
+        fi
+        log "WARN: ${name} 源码下载失败，保留仓库自带版本"
+        return 1
+    fi
+
+    sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${ver}|" "$mk"
+    sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${hash}|" "$mk"
+    log "${name} -> ${tag}"
+}
+
+# easytier 回退自洽组合：包内默认版本与写死资产 hash 必须成对，§4.2 改造与 §4.3 回退共用此单一来源；
+# 上游新 tag 的资产缺失/校验失败时整体回退到该组合编译，不做无校验下载
+EASYTIER_FALLBACK_VER="2.7.0"
+EASYTIER_FALLBACK_HASH="8abc5d850ad140cd071475a2dd2b4b135f7e0e8b7271897f01fc08a5c0a9c1b0"
+
 [ -x ./scripts/feeds ] || { log "ERROR: 请在 openwrt 源码根目录执行"; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -119,11 +193,6 @@ log "删除 feeds 里的同名旧包"
 for pkg in mosdns xray-core sing-box v2ray-geodata tcping geoview chinadns-ng vlmcsd; do
     rm -rf "feeds/packages/net/${pkg}"
 done
-
-# telegraf 未选中；把版本化 Go 依赖改成 golang/host，避免编译日志 warning
-if [ -f feeds/packages/utils/telegraf/Makefile ]; then
-    sed -i 's|golang1\.27/host|golang/host|' feeds/packages/utils/telegraf/Makefile
-fi
 
 # LuCI 在线用户数只统计 br-lan，N1 的 LAN 是 eth0，导致统计恒为 0
 luci_online="feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
@@ -314,9 +383,22 @@ clone_bg https://github.com/sbwml/autocore-arm clone/autocore openwrt-25.12
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
 clone_bg https://github.com/jerrykuku/luci-theme-argon clone/argon ""
 clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
-# bandix 固定 tag：包内 PKG_VERSION 与二进制资产 hash 绑死，跟 main 会在上游发版前 404
-clone_bg https://github.com/timsaya/openwrt-bandix clone/bandix v0.12.12
-clone_bg https://github.com/timsaya/luci-app-bandix clone/bandixluci v0.12.12-r5
+# bandix 动态克隆上游最新 tag（含 -rN 包修订后缀）；核心二进制资产随版本发布在 timsaya/bandix，
+# tag 与资产可能短暂不同步——aarch64 资产可下载才采用该 tag，失败回退已知自洽 tag v0.12.12
+bandix_tag="$(github_latest_tag https://github.com/timsaya/openwrt-bandix.git 'v*' '^v[0-9]+(\.[0-9]+)+(-r[0-9]+)?$' || true)"
+bandix_tag="${bandix_tag:-v0.12.12}"
+bandix_core="${bandix_tag#v}"
+bandix_core="${bandix_core%%-r*}"
+if ! curl -fsIL --retry 2 "https://github.com/timsaya/bandix/releases/download/v${bandix_core}/bandix-${bandix_core}-aarch64-unknown-linux-musl.tar.gz" > /dev/null 2>&1; then
+    log "WARN: bandix ${bandix_tag} 的核心资产不可下载，回退自洽 tag v0.12.12"
+    bandix_tag="v0.12.12"
+    bandix_core="0.12.12"
+fi
+bandixluci_tag="$(github_latest_tag https://github.com/timsaya/luci-app-bandix.git 'v*' '^v[0-9]+(\.[0-9]+)+(-r[0-9]+)?$' || true)"
+bandixluci_tag="${bandixluci_tag:-v0.12.12-r5}"
+log "bandix -> ${bandix_tag} / luci-app-bandix -> ${bandixluci_tag}"
+clone_bg https://github.com/timsaya/openwrt-bandix clone/bandix "$bandix_tag"
+clone_bg https://github.com/timsaya/luci-app-bandix clone/bandixluci "$bandixluci_tag"
 clone_bg https://github.com/EasyTier/luci-app-easytier clone/easytier ""
 clone_bg https://github.com/OneNAS-space/vlmcsd clone/vlmcsd ""
 clone_bg https://github.com/OneNAS-space/luci-app-vlmcsd clone/vlmcsdluci ""
@@ -327,54 +409,43 @@ wait_clones
 log "仓库克隆完成（${#CLONE_PIDS[@]} 个）"
 
 # ---- 4.2 落盘与目录特例 -----------------------------------------------------
-# golang 工具链 -> feeds
-rm -rf feeds/packages/lang/golang
-cp -rf clone/golang feeds/packages/lang/golang
+# golang 工具链最先落盘 -> feeds：后续 Go 组件（mosdns/openlist2/ddnstox 等）编译时依赖最新工具链
+install_pkg clone/golang feeds/packages/lang/golang
 
 # passwall 组件
-rm -rf package/passwall_packages
-cp -rf clone/passwall_packages package/passwall_packages
-
-rm -rf package/passwall2
-cp -rf clone/passwall2 package/passwall2
+install_pkg clone/passwall_packages package/passwall_packages
+install_pkg clone/passwall2 package/passwall2
 rm -rf package/passwall_packages/chinadns-ng
 # chinadns-ng 非必需：passwall2 没有它时会回退到 dnsmasq
 sed -i '/^[[:space:]]*select PACKAGE_chinadns-ng$/d' package/passwall2/luci-app-passwall2/Makefile
 
 # mosdns
-rm -rf package/mosdns
-cp -rf clone/mosdns package/mosdns
+install_pkg clone/mosdns package/mosdns
 
 # openlist2（网盘挂载）
-rm -rf package/openlist2
-cp -rf clone/openlist2 package/openlist2
+install_pkg clone/openlist2 package/openlist2
 
 # ddnstox（内网穿透）
-rm -rf package/ddnstox
-cp -rf clone/ddnstox package/ddnstox
+install_pkg clone/ddnstox package/ddnstox
 
 # nikki（mihomo 使用稳定版 mihomo-meta，不引入 alpha）
-rm -rf package/nikki package/luci-app-nikki package/mihomo-meta
-cp -rf clone/nikki/nikki package/nikki
-cp -rf clone/nikki/luci-app-nikki package/luci-app-nikki
-cp -rf clone/nikki/mihomo-meta package/mihomo-meta
+install_pkg clone/nikki/nikki package/nikki
+install_pkg clone/nikki/luci-app-nikki package/luci-app-nikki
+install_pkg clone/nikki/mihomo-meta package/mihomo-meta
 
 # autocore（CPU 信息展示）
-rm -rf feeds/packages/utils/autocore
 mkdir -p feeds/packages/utils
-cp -rf clone/autocore feeds/packages/utils/autocore
+install_pkg clone/autocore feeds/packages/utils/autocore
 
 # luci-app-amlogic（晶晨宝盒）
-rm -rf feeds/luci/applications/luci-app-amlogic
-cp -rf clone/amlogic/luci-app-amlogic feeds/luci/applications/
+install_pkg clone/amlogic/luci-app-amlogic feeds/luci/applications/luci-app-amlogic
 
 # argon 3.0 已内置设置，不再引入旧版 argon-config（与主题包文件冲突）
-rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
-cp -rf clone/argon feeds/luci/themes/luci-theme-argon
+rm -rf feeds/luci/applications/luci-app-argon-config
+install_pkg clone/argon feeds/luci/themes/luci-theme-argon
 
 # luci-app-adguardhome-tk：路径对齐实机（核心 /usr/bin/AdGuardHome，配置/数据 /etc/adguardhome）
-rm -rf package/luci-app-adguardhome-tk
-cp -rf clone/aghluci package/luci-app-adguardhome-tk
+install_pkg clone/aghluci package/luci-app-adguardhome-tk
 agh_tk_uci="package/luci-app-adguardhome-tk/root/etc/config/AdGuardHome"
 sed -i "s|option binpath '/usr/bin/AdGuardHome/AdGuardHome'|option binpath '/usr/bin/AdGuardHome'|" "$agh_tk_uci"
 sed -i "s|option configpath '/etc/AdGuardHome.yaml'|option configpath '/etc/adguardhome/adguardhome.yaml'|" "$agh_tk_uci"
@@ -402,9 +473,8 @@ fi
 log "adguardhome-tk init 兜底默认值已对齐文件式布局"
 
 # bandix（eBPF 流量监控）+ LuCI 前端；两个仓库的 Makefile 在 <仓库>/<同名子目录>/ 下
-rm -rf package/bandix package/luci-app-bandix
-cp -rf clone/bandix/openwrt-bandix package/bandix
-cp -rf clone/bandixluci/luci-app-bandix package/luci-app-bandix
+install_pkg clone/bandix/openwrt-bandix package/bandix
+install_pkg clone/bandixluci/luci-app-bandix package/luci-app-bandix
 # 上游默认监控 br-lan，N1 的 LAN 是 eth0，不改则启用监控后取不到数据
 bandix_cfg="package/bandix/files/bandix.config"
 if [ -f "$bandix_cfg" ]; then
@@ -428,23 +498,24 @@ else
 fi
 
 # easytier 主程序（预编译 aarch64 二进制）+ Lua 版 LuCI 前端
-rm -rf package/easytier package/luci-app-easytier
-cp -rf clone/easytier/easytier package/easytier
-cp -rf clone/easytier/luci-app-easytier package/luci-app-easytier
+install_pkg clone/easytier/easytier package/easytier
+install_pkg clone/easytier/luci-app-easytier package/luci-app-easytier
 
 # 上游 Makefile 用裸 wget 下载二进制，改造为标准 PKG_SOURCE/PKG_HASH（make download 阶段缓存 + sha256 校验）；
-# PKG_HASH 为 2.7.0 资产值，仅当 §4.3 取不到最新 tag 时兜底，正常构建会被 §4.3 按当前 tag 覆盖
+# 架构必须字面写 aarch64：上游的 APP_ARCH 由包内 ifeq $(ARCH) 定义，仅编译期子 make 生效，download/metadata 阶段展开为空（曾致 CI 下载 easytier-linux--v2.7.0.zip 404）；
+# PKG_HASH 为回退自洽组合的资产值，正常构建会被 §4.3 按当前 tag 覆盖
 easytier_mk="package/easytier/Makefile"
 if [ -f "$easytier_mk" ]; then
-    python3 - "$easytier_mk" <<'PY'
+    EASYTIER_FALLBACK_HASH="$EASYTIER_FALLBACK_HASH" python3 - "$easytier_mk" <<'PY'
+import os
 import sys
 
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
 
-pkg_hash = "8abc5d850ad140cd071475a2dd2b4b135f7e0e8b7271897f01fc08a5c0a9c1b0"
+pkg_hash = os.environ["EASYTIER_FALLBACK_HASH"]
 src_lines = [
-    "PKG_SOURCE:=easytier-linux-$(APP_ARCH)-v$(PKG_VERSION).zip",
+    "PKG_SOURCE:=easytier-linux-aarch64-v$(PKG_VERSION).zip",
     "PKG_SOURCE_URL:=https://github.com/EasyTier/EasyTier/releases/download/v$(PKG_VERSION)/",
     "PKG_HASH:=" + pkg_hash,
 ]
@@ -479,19 +550,16 @@ PY
 fi
 
 # vlmcsd（KMS 激活）+ LuCI 前端
-rm -rf package/vlmcsd package/luci-app-vlmcsd
-cp -rf clone/vlmcsd package/vlmcsd
-cp -rf clone/vlmcsdluci package/luci-app-vlmcsd
+install_pkg clone/vlmcsd package/vlmcsd
+install_pkg clone/vlmcsdluci package/luci-app-vlmcsd
 
 # airconnect（AirPlay 音频桥接）：仓库内包目录与包名同名
-rm -rf package/airconnect package/luci-app-airconnect
-cp -rf clone/airconnect/airconnect package/airconnect
-cp -rf clone/airconnect/luci-app-airconnect package/luci-app-airconnect
+install_pkg clone/airconnect/airconnect package/airconnect
+install_pkg clone/airconnect/luci-app-airconnect package/luci-app-airconnect
 
 # ngtcp2 / nghttp3（curl HTTP3 的 QUIC 栈）：官方 feed 版本旧，必须成对替换（ngtcp2 依赖新版 libnghttp3）
-rm -rf feeds/packages/libs/ngtcp2 feeds/packages/libs/nghttp3
-cp -rf clone/ngtcp2 feeds/packages/libs/ngtcp2
-cp -rf clone/nghttp3 feeds/packages/libs/nghttp3
+install_pkg clone/ngtcp2 feeds/packages/libs/ngtcp2
+install_pkg clone/nghttp3 feeds/packages/libs/nghttp3
 
 # ophub 的 remake 打包时从官方仓库实时下载插件脚本覆盖 /usr/sbin，构建期对 feeds 层的补丁不生效；
 # 升级后的自愈由 99-adguardhome-paths 在首启完成（见 §6），此处不再打 ophub 脚本补丁
@@ -499,61 +567,59 @@ cp -rf clone/nghttp3 feeds/packages/libs/nghttp3
 log "组件落盘完成（golang / passwall×2 / mosdns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix / easytier / vlmcsd / airconnect / ngtcp2+nghttp3）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
-github_latest_tag() {
-    local repo="$1"
-    local glob="$2"
-    local regex="$3"
-    git ls-remote --tags --refs "$repo" "$glob" 2>/dev/null \
-        | sed -n 's#.*refs/tags/##p' \
-        | grep -E "$regex" \
-        | sort -V \
-        | tail -n1
-}
-
-fetch_sha256() {
-    local url="$1"
-    local tmp hash
-    tmp="$(mktemp)"
-    if ! curl -fsSL --retry 3 --retry-all-errors "$url" -o "$tmp"; then
-        rm -f "$tmp"
-        return 1
-    fi
-    hash="$(sha256sum "$tmp" | awk '{print $1}')"
-    rm -f "$tmp"
-    printf '%s\n' "$hash"
-}
-
 log "确定外部组件版本 ..."
 
-# xray-core：最新正式 tag（passwall2 使用）
-xray_tag="$(github_latest_tag https://github.com/XTLS/Xray-core.git 'v*' '^v[0-9]+(\.[0-9]+)+$')"
-[ -n "$xray_tag" ] || { log "ERROR: 无法获取 xray-core 版本"; exit 1; }
-xray_ver="${xray_tag#v}"
-xray_hash="$(fetch_sha256 "https://codeload.github.com/XTLS/Xray-core/tar.gz/v${xray_ver}?")"
-[ -n "$xray_hash" ] || { log "ERROR: xray-core 源码下载失败"; exit 1; }
-sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${xray_ver}|" package/passwall_packages/xray-core/Makefile
-sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${xray_hash}|" package/passwall_packages/xray-core/Makefile
-log "xray-core -> ${xray_ver}"
+# §4.3 各组件的上游解析相互独立，后台并行执行以重叠网络 IO；
+# xray/mihomo 无回退源，任务失败中止编译；agh 获取失败回退 feed 自带版本（仅 feeds 包结构缺失才中止）；
+# 其余失败保留仓库自带版本（各任务函数内已打 WARN）
+stage3_bg() {  # $1=组件名 $2=任务函数名：后台执行并登记 PID:名字
+    "$2" &
+    BG_PIDS+=("${!}:$1")
+}
+wait_stage3() {
+    local item pid name
+    for item in "${BG_PIDS[@]}"; do
+        pid="${item%%:*}"
+        name="${item#*:}"
+        if ! wait "$pid"; then
+            case "$name" in
+                xray|mihomo|agh) log "ERROR: ${name} 组件版本更新失败，中止编译"; exit 1 ;;
+            esac
+        fi
+    done
+    BG_PIDS=()
+}
 
-# mihomo：最新稳定版，排除 alpha / rc（nikki 使用）
-mihomo_tag="$(github_latest_tag https://github.com/MetaCubeX/mihomo.git 'v*' '^v[0-9]+(\.[0-9]+)+$')"
-[ -n "$mihomo_tag" ] || { log "ERROR: 无法获取 mihomo 版本"; exit 1; }
-mihomo_ver="${mihomo_tag#v}"
-sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${mihomo_ver}|" package/mihomo-meta/Makefile
-sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
-sed -i "s|^PKG_BUILD_VERSION:=.*$|PKG_BUILD_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
-sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/mihomo-meta/Makefile
-log "mihomo -> ${mihomo_tag}"
+stage3_xray() {
+    update_pkg_version "xray-core" \
+        https://github.com/XTLS/Xray-core.git 'v*' '^v[0-9]+(\.[0-9]+)+$' \
+        package/passwall_packages/xray-core/Makefile \
+        'https://codeload.github.com/XTLS/Xray-core/tar.gz/v%s?' 1
+}
+BG_PIDS=()
+stage3_bg xray stage3_xray
 
-# openlist2：主程序 + 前端（取不到时保留仓库自带版本）
-openlist_tag="$(github_latest_tag https://github.com/OpenListTeam/OpenList.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$openlist_tag" ]; then
-    openlist_ver="${openlist_tag#v}"
-    openlist_hash="$(fetch_sha256 "https://codeload.github.com/OpenListTeam/OpenList/tar.gz/v${openlist_ver}?" || true)"
-    if [ -n "$openlist_hash" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${openlist_ver}|" package/openlist2/openlist2/Makefile
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${openlist_hash}|" package/openlist2/openlist2/Makefile
+# mihomo：最新稳定版，排除 alpha / rc（nikki 使用；git 源 + mirror skip）
+stage3_mihomo() {
+    local mihomo_tag mihomo_ver
+    mihomo_tag="$(github_latest_tag https://github.com/MetaCubeX/mihomo.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+    [ -n "$mihomo_tag" ] || { log "ERROR: 无法获取 mihomo 版本"; return 1; }
+    mihomo_ver="${mihomo_tag#v}"
+    sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${mihomo_ver}|" package/mihomo-meta/Makefile
+    sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
+    sed -i "s|^PKG_BUILD_VERSION:=.*$|PKG_BUILD_VERSION:=${mihomo_tag}|" package/mihomo-meta/Makefile
+    sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/mihomo-meta/Makefile
+    log "mihomo -> ${mihomo_tag}"
+}
+stage3_bg mihomo stage3_mihomo
 
+# openlist2：主程序走标准更新，前端发布资产在 Download 段单独写入（取不到时保留仓库自带版本）
+stage3_openlist() {
+    local openlist_front_ver frontend_tag frontend_hash
+    if update_pkg_version "openlist2" \
+        https://github.com/OpenListTeam/OpenList.git 'v*' '^v[0-9]+(\.[0-9]+)+$' \
+        package/openlist2/openlist2/Makefile \
+        'https://codeload.github.com/OpenListTeam/OpenList/tar.gz/v%s?' 0; then
         openlist_front_ver=""
         frontend_tag="$(github_latest_tag https://github.com/OpenListTeam/OpenList-Frontend.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
         if [ -n "$frontend_tag" ]; then
@@ -564,149 +630,160 @@ if [ -n "$openlist_tag" ]; then
                 sed -i "/define Download\/openlist-frontend/,/endef/ s|^  HASH:=.*$|  HASH:=${frontend_hash}|" package/openlist2/openlist2/Makefile
             fi
         fi
-        log "openlist2 -> ${openlist_ver} / 前端 ${openlist_front_ver:-保持原版本}"
-    else
-        log "WARN: openlist2 下载失败，保留原版本"
+        log "openlist2 前端 -> ${openlist_front_ver:-保持原版本}"
     fi
-fi
+    return 0
+}
+stage3_bg openlist stage3_openlist
 
 # sing-box：最新正式 tag（passwall_packages 使用）
-singbox_tag="$(github_latest_tag https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$singbox_tag" ]; then
-    singbox_ver="${singbox_tag#v}"
-    singbox_hash="$(fetch_sha256 "https://codeload.github.com/SagerNet/sing-box/tar.gz/v${singbox_ver}?" || true)"
-    if [ -n "$singbox_hash" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${singbox_ver}|" package/passwall_packages/sing-box/Makefile
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${singbox_hash}|" package/passwall_packages/sing-box/Makefile
-        log "sing-box -> ${singbox_ver}"
-    else
-        log "WARN: sing-box 下载失败，保留原版本"
-    fi
-fi
+stage3_singbox() {
+    update_pkg_version "sing-box" \
+        https://github.com/SagerNet/sing-box.git 'v*' '^v[0-9]+(\.[0-9]+)+$' \
+        package/passwall_packages/sing-box/Makefile \
+        'https://codeload.github.com/SagerNet/sing-box/tar.gz/v%s?' 0
+}
+stage3_bg sing-box stage3_singbox
 
 # geoview（geo 数据查询工具）
-geoview_tag="$(github_latest_tag https://github.com/snowie2000/geoview.git '*' '^[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$geoview_tag" ]; then
-    geoview_hash="$(fetch_sha256 "https://codeload.github.com/snowie2000/geoview/tar.gz/${geoview_tag}?" || true)"
-    if [ -n "$geoview_hash" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${geoview_tag}|" package/passwall_packages/geoview/Makefile
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${geoview_hash}|" package/passwall_packages/geoview/Makefile
-        log "geoview -> ${geoview_tag}"
-    else
-        log "WARN: geoview 下载失败，保留原版本"
-    fi
-fi
+stage3_geoview() {
+    update_pkg_version "geoview" \
+        https://github.com/snowie2000/geoview.git '*' '^[0-9]+(\.[0-9]+)+$' \
+        package/passwall_packages/geoview/Makefile \
+        'https://codeload.github.com/snowie2000/geoview/tar.gz/%s?' 0
+}
+stage3_bg geoview stage3_geoview
 
 # AdGuardHome：最新正式 tag，重试 3 次；耗尽后回退 feed 自带版本，不阻断编译
-agh_makefile="feeds/packages/net/adguardhome/Makefile"
-[ -f "$agh_makefile" ] || { log "ERROR: 找不到 feeds adguardhome 包"; exit 1; }
-agh_ok=""
-for i in 1 2 3; do
-    agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-    [ -n "$agh_tag" ] || { log "WARN: 第 ${i}/3 次获取 AdGuardHome 版本失败"; sleep 3; continue; }
-    agh_ver="${agh_tag#v}"
-    agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
-    [ -n "$agh_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 源码校验失败"; sleep 3; continue; }
-    agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
-    [ -n "$agh_front_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 前端校验失败"; sleep 3; continue; }
-    agh_ok=1
-    break
-done
-if [ -n "$agh_ok" ]; then
-    sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
-    sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
-    sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
-    log "adguardhome -> ${agh_ver}"
-    if [ -n "${GITHUB_ENV:-}" ]; then
-        echo "AGH_VERSION=${agh_ver}" >> "$GITHUB_ENV"
+stage3_agh() {
+    local agh_makefile="feeds/packages/net/adguardhome/Makefile"
+    local agh_ok="" i agh_tag agh_ver agh_hash agh_front_hash
+    [ -f "$agh_makefile" ] || { log "ERROR: 找不到 feeds adguardhome 包"; return 1; }
+    for i in 1 2 3; do
+        agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+        [ -n "$agh_tag" ] || { log "WARN: 第 ${i}/3 次获取 AdGuardHome 版本失败"; sleep 3; continue; }
+        agh_ver="${agh_tag#v}"
+        agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
+        [ -n "$agh_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 源码校验失败"; sleep 3; continue; }
+        agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
+        [ -n "$agh_front_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 前端校验失败"; sleep 3; continue; }
+        agh_ok=1
+        break
+    done
+    if [ -n "$agh_ok" ]; then
+        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
+        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
+        sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
+        log "adguardhome -> ${agh_ver}"
+        if [ -n "${GITHUB_ENV:-}" ]; then
+            echo "AGH_VERSION=${agh_ver}" >> "$GITHUB_ENV"
+        fi
+    else
+        log "WARN: AdGuardHome 重试 3 次均失败，回退 feed 自带版本编译"
     fi
-else
-    log "WARN: AdGuardHome 重试 3 次均失败，回退 feed 自带版本编译"
-fi
-
-# feeds adguardhome 包只保留编译产物（/usr/bin/AdGuardHome），服务交给 luci-app-adguardhome-tk，避免双 init
-agh_feed_mk="feeds/packages/net/adguardhome/Makefile"
-if [ -f "$agh_feed_mk" ]; then
-    sed -i '\|./files/adguardhome.conf|d; \|./files/adguardhome.init|d; \|./files/adguardhome.defaults|d' "$agh_feed_mk"
-    if grep -q "adguardhome.init" "$agh_feed_mk"; then
+    # feeds adguardhome 包只保留编译产物（/usr/bin/AdGuardHome），服务交给 luci-app-adguardhome-tk，避免双 init；
+    # 与版本写入同一文件，必须留在同一任务内串行执行（主脚本并发 sed 会竞态覆盖）
+    sed -i '\|./files/adguardhome.conf|d; \|./files/adguardhome.init|d; \|./files/adguardhome.defaults|d' "$agh_makefile"
+    if grep -q "adguardhome.init" "$agh_makefile"; then
         log "WARN: feeds adguardhome init 清理未生效，固件可能存在双 init 脚本"
     else
         log "feeds adguardhome 已精简为纯二进制包（服务由 luci-app-adguardhome-tk 接管）"
     fi
-fi
+}
+stage3_bg agh stage3_agh
 
 # v2ray-geodata：passwall 包 + Loyalsoldier 最新数据
-geoip_tag="$(github_latest_tag https://github.com/Loyalsoldier/geoip.git '*' '^[0-9]{12}$' || true)"
-geosite_tag="$(github_latest_tag https://github.com/Loyalsoldier/v2ray-rules-dat.git '*' '^[0-9]{12}$' || true)"
-if [ -n "$geoip_tag" ] && [ -n "$geosite_tag" ]; then
-    geoip_hash="$(fetch_sha256 "https://github.com/Loyalsoldier/geoip/releases/download/${geoip_tag}/geoip.dat" || true)"
-    geosite_hash="$(fetch_sha256 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${geosite_tag}/geosite.dat" || true)"
-    if [ -n "$geoip_hash" ] && [ -n "$geosite_hash" ]; then
-        sed -i "s|^GEOIP_VER:=.*$|GEOIP_VER:=${geoip_tag}|" package/passwall_packages/v2ray-geodata/Makefile
-        sed -i "s|^GEOSITE_VER:=.*$|GEOSITE_VER:=${geosite_tag}|" package/passwall_packages/v2ray-geodata/Makefile
-        sed -i "/define Download\/geoip/,/endef/ s|^  HASH:=.*$|  HASH:=${geoip_hash}|" package/passwall_packages/v2ray-geodata/Makefile
-        sed -i "/define Download\/geosite/,/endef/ s|^  HASH:=.*$|  HASH:=${geosite_hash}|" package/passwall_packages/v2ray-geodata/Makefile
-        log "v2ray-geodata -> geoip ${geoip_tag} / geosite ${geosite_tag}"
-    else
-        log "WARN: geo 数据下载失败，保留原版本"
+stage3_geodata() {
+    local geoip_tag geosite_tag geoip_hash geosite_hash
+    geoip_tag="$(github_latest_tag https://github.com/Loyalsoldier/geoip.git '*' '^[0-9]{12}$' || true)"
+    geosite_tag="$(github_latest_tag https://github.com/Loyalsoldier/v2ray-rules-dat.git '*' '^[0-9]{12}$' || true)"
+    if [ -n "$geoip_tag" ] && [ -n "$geosite_tag" ]; then
+        geoip_hash="$(fetch_sha256 "https://github.com/Loyalsoldier/geoip/releases/download/${geoip_tag}/geoip.dat" || true)"
+        geosite_hash="$(fetch_sha256 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${geosite_tag}/geosite.dat" || true)"
+        if [ -n "$geoip_hash" ] && [ -n "$geosite_hash" ]; then
+            sed -i "s|^GEOIP_VER:=.*$|GEOIP_VER:=${geoip_tag}|" package/passwall_packages/v2ray-geodata/Makefile
+            sed -i "s|^GEOSITE_VER:=.*$|GEOSITE_VER:=${geosite_tag}|" package/passwall_packages/v2ray-geodata/Makefile
+            sed -i "/define Download\/geoip/,/endef/ s|^  HASH:=.*$|  HASH:=${geoip_hash}|" package/passwall_packages/v2ray-geodata/Makefile
+            sed -i "/define Download\/geosite/,/endef/ s|^  HASH:=.*$|  HASH:=${geosite_hash}|" package/passwall_packages/v2ray-geodata/Makefile
+            log "v2ray-geodata -> geoip ${geoip_tag} / geosite ${geosite_tag}"
+        else
+            log "WARN: geo 数据下载失败，保留原版本"
+        fi
     fi
-fi
+}
+stage3_bg geodata stage3_geodata
 
 # ddnstox 预编译二进制
-ddnsto_html="$(curl -fsSL --retry 3 --retry-all-errors https://fw0.koolcenter.com/binary/ddnsto/op_custom/ 2>/dev/null || true)"
-ddnsto_ver="$(printf '%s' "$ddnsto_html" \
-    | grep -oE 'ddnsto-custom-binary-[0-9.]+\.tar\.gz' \
-    | sed 's|^ddnsto-custom-binary-||; s|\.tar\.gz$||' \
-    | sort -Vu | tail -n1)"
-if [ -n "$ddnsto_ver" ]; then
-    ddnsto_hash="$(fetch_sha256 "https://fw0.koolcenter.com/binary/ddnsto/op_custom/ddnsto-custom-binary-${ddnsto_ver}.tar.gz" || true)"
-    if [ -n "$ddnsto_hash" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${ddnsto_ver}|" package/ddnstox/ddnstox/Makefile
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${ddnsto_hash}|" package/ddnstox/ddnstox/Makefile
-        log "ddnstox -> ${ddnsto_ver}"
+stage3_ddnstox() {
+    local ddnsto_html ddnsto_ver ddnsto_hash
+    ddnsto_html="$(curl -fsSL --retry 3 --retry-all-errors https://fw0.koolcenter.com/binary/ddnsto/op_custom/ 2>/dev/null || true)"
+    ddnsto_ver="$(printf '%s' "$ddnsto_html" \
+        | grep -oE 'ddnsto-custom-binary-[0-9.]+\.tar\.gz' \
+        | sed 's|^ddnsto-custom-binary-||; s|\.tar\.gz$||' \
+        | sort -Vu | tail -n1)"
+    if [ -n "$ddnsto_ver" ]; then
+        ddnsto_hash="$(fetch_sha256 "https://fw0.koolcenter.com/binary/ddnsto/op_custom/ddnsto-custom-binary-${ddnsto_ver}.tar.gz" || true)"
+        if [ -n "$ddnsto_hash" ]; then
+            sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${ddnsto_ver}|" package/ddnstox/ddnstox/Makefile
+            sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${ddnsto_hash}|" package/ddnstox/ddnstox/Makefile
+            log "ddnstox -> ${ddnsto_ver}"
+        fi
     fi
-fi
+}
+stage3_bg ddnstox stage3_ddnstox
 
 # easytier：预编译二进制，版本号同时写死在两个 Makefile 与 init.d 兜底值里，三处必须同步；
-# 取不到时包内自带 2.7.0 默认值，编译仍可继续
-easytier_tag="$(github_latest_tag https://github.com/EasyTier/EasyTier.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-if [ -n "$easytier_tag" ]; then
-    easytier_ver="${easytier_tag#v}"
+# 版本与 hash 永远成对：新 tag 的资产获取失败时整体回退到 EASYTIER_FALLBACK 自洽组合，不做无校验下载
+stage3_easytier() {
+    local easytier_tag easytier_ver easytier_hash easytier_try easytier_try_hash mk easytier_init easytier_init_tag
+    easytier_ver="${EASYTIER_FALLBACK_VER}"
+    easytier_hash="${EASYTIER_FALLBACK_HASH}"
+    easytier_tag="$(github_latest_tag https://github.com/EasyTier/EasyTier.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
+    if [ -n "$easytier_tag" ]; then
+        easytier_try="${easytier_tag#v}"
+        easytier_try_hash="$(fetch_sha256 "https://github.com/EasyTier/EasyTier/releases/download/v${easytier_try}/easytier-linux-aarch64-v${easytier_try}.zip" || true)"
+        if [ -n "$easytier_try_hash" ]; then
+            easytier_ver="${easytier_try}"
+            easytier_hash="${easytier_try_hash}"
+        else
+            log "WARN: easytier ${easytier_tag} 资产获取失败，回退自洽版本 ${EASYTIER_FALLBACK_VER}"
+        fi
+    else
+        log "WARN: 无法获取 easytier 版本，使用包内默认版本"
+    fi
     for mk in package/easytier/Makefile package/luci-app-easytier/Makefile; do
         if [ -f "$mk" ]; then
             sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${easytier_ver}|" "$mk"
         fi
     done
     easytier_init="package/luci-app-easytier/root/etc/init.d/easytier"
+    easytier_init_tag="v${easytier_ver}"
     if [ -f "$easytier_init" ]; then
-        sed -i "s|tag=\"v[0-9.]*\"|tag=\"v${easytier_ver}\"|" "$easytier_init"
+        sed -i "s|tag=\"v[0-9.]*\"|tag=\"${easytier_init_tag}\"|" "$easytier_init"
     fi
-    easytier_hash="$(fetch_sha256 "https://github.com/EasyTier/EasyTier/releases/download/v${easytier_ver}/easytier-linux-aarch64-v${easytier_ver}.zip" || true)"
-    if [ -n "$easytier_hash" ]; then
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${easytier_hash}|" package/easytier/Makefile
-        easytier_hash_ok="已按 ${easytier_tag} 更新"
-    else
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=skip|" package/easytier/Makefile
-        easytier_hash_ok="获取失败，置 skip（跳过校验）"
-    fi
+    sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${easytier_hash}|" package/easytier/Makefile
     if grep -qx "PKG_VERSION:=${easytier_ver}" package/easytier/Makefile \
         && grep -qx "PKG_VERSION:=${easytier_ver}" package/luci-app-easytier/Makefile; then
-        log "easytier -> ${easytier_tag}（PKG_HASH ${easytier_hash_ok}）"
+        log "easytier -> ${easytier_ver}"
     else
         log "WARN: easytier 版本写入未全部生效，请人工核对两个 Makefile"
     fi
-else
-    log "WARN: 无法获取 easytier 版本，使用包内默认版本"
-fi
+}
+stage3_bg easytier stage3_easytier
 
 # tcping：跟随 git HEAD
-tcping_commit="$(git ls-remote https://github.com/Lienol/tcping.git HEAD 2>/dev/null | awk '{print $1; exit}')"
-if [ -n "$tcping_commit" ]; then
-    sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${tcping_commit}|" package/passwall_packages/tcping/Makefile
-    sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/passwall_packages/tcping/Makefile
-    log "tcping -> ${tcping_commit:0:7}"
-fi
+stage3_tcping() {
+    local tcping_commit
+    tcping_commit="$(git ls-remote https://github.com/Lienol/tcping.git HEAD 2>/dev/null | awk '{print $1; exit}')"
+    if [ -n "$tcping_commit" ]; then
+        sed -i "s|^PKG_SOURCE_VERSION:=.*$|PKG_SOURCE_VERSION:=${tcping_commit}|" package/passwall_packages/tcping/Makefile
+        sed -i "s|^PKG_MIRROR_HASH:=.*$|PKG_MIRROR_HASH:=skip|" package/passwall_packages/tcping/Makefile
+        log "tcping -> ${tcping_commit:0:7}"
+    fi
+}
+stage3_bg tcping stage3_tcping
 
+wait_stage3
 log "外部组件版本确定完成"
 
 # ---- 4.4 修正独立 LuCI 包的版本号 ------------------------------------------
