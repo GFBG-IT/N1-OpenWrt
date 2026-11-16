@@ -1,0 +1,12 @@
+# AGH 设备表 —— restore-static-leases.sh 的数据源
+# 格式: 名称|MAC|IPv4  (每行一条, # 开头为注释)
+# 规则:
+#   - 名称只用中划线(-), 不用下划线(_)或空格 (符合RFC 952主机名规范)
+#   - MAC 小写
+#   - 本机路由器自身也建议加入(名称取 system.@system[0].hostname)
+# 维护: 增删/改名设备后重跑 restore-static-leases.sh 即生效(幂等)
+#
+# 示例(替换为实际设备):
+# Dev-Router|aa:bb:cc:dd:ee:01|192.168.1.100
+# Dev-Phone|aa:bb:cc:dd:ee:02|192.168.1.201
+# Dev-Laptop|aa:bb:cc:dd:ee:03|192.168.1.202

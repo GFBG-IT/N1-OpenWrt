@@ -626,28 +626,8 @@ stage3_mihomo() {
 }
 stage3_bg mihomo stage3_mihomo
 
-# openlist2：主程序走标准更新，前端发布资产在 Download 段单独写入（取不到时保留仓库自带版本）
-stage3_openlist() {
-    local openlist_front_ver frontend_tag frontend_hash
-    if update_pkg_version "openlist2" \
-        https://github.com/OpenListTeam/OpenList.git 'v*' '^v[0-9]+(\.[0-9]+)+$' \
-        package/openlist2/openlist2/Makefile \
-        'https://codeload.github.com/OpenListTeam/OpenList/tar.gz/v%s?' 0; then
-        openlist_front_ver=""
-        frontend_tag="$(github_latest_tag https://github.com/OpenListTeam/OpenList-Frontend.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-        if [ -n "$frontend_tag" ]; then
-            openlist_front_ver="${frontend_tag#v}"
-            frontend_hash="$(fetch_sha256 "https://github.com/OpenListTeam/OpenList-Frontend/releases/download/v${openlist_front_ver}/openlist-frontend-dist-lite-v${openlist_front_ver}.tar.gz" || true)"
-            if [ -n "$frontend_hash" ]; then
-                sed -i "s|^PKG_WEB_VERSION:=.*$|PKG_WEB_VERSION:=${openlist_front_ver}|" package/openlist2/openlist2/Makefile
-                sed -i "/define Download\/openlist-frontend/,/endef/ s|^  HASH:=.*$|  HASH:=${frontend_hash}|" package/openlist2/openlist2/Makefile
-            fi
-        fi
-        log "openlist2 前端 -> ${openlist_front_ver:-保持原版本}"
-    fi
-    return 0
-}
-stage3_bg openlist stage3_openlist
+# openlist2 版本跟随 sbwml 的 Makefile 自洽 pin（版本/前端资产/hash 成对维护），
+# diy.sh 不做前端资产追新——曾因上游停发 dist-lite 变体而 404
 
 stage3_singbox() {
     update_pkg_version "sing-box" \
