@@ -1000,6 +1000,14 @@ if [ -f "$BKP" ] && ! grep -q '\./usr/share/bandix/' "$BKP"; then
         sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./usr/share/bandix/ \\|' "$BKP"
     fi
 fi
+# AGH 设备命名套件的两份用户数据表（设备表/LL兜底表），随 ophub 升级保留；脚本与模板随固件自带
+if [ -f "$BKP" ] && ! grep -q '\./etc/agh-devices\.conf' "$BKP"; then
+    if grep -q '\./usr/share/bandix/ \\' "$BKP"; then
+        sed -i 's|\./usr/share/bandix/ \\|&\n./etc/agh-devices.conf \\\n./etc/agh-ll-fallback.conf \\|' "$BKP"
+    else
+        sed -i 's|\./etc/AdGuardHome\.yaml \\|&\n./etc/agh-devices.conf \\\n./etc/agh-ll-fallback.conf \\|' "$BKP"
+    fi
+fi
 exit 0
 EOF
 

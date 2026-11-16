@@ -153,8 +153,12 @@ jobs:
           etc/uci-defaults/99-zram-size \
           etc/rc.d/S96-rps-4cpu \
           etc/crontabs/root \
+          etc/config/amlogic \
+          etc/config/network \
           etc/ssh/sshd_config \
           etc/ssh/ssh_config \
+          usr/bin/restore-static-leases.sh usr/bin/refresh-ll.sh usr/bin/restore-dns-extras.sh \
+          etc/agh-devices.conf.example etc/agh-ll-fallback.conf.example \
           etc/uci-defaults/99-mitigations-off \
           usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/easytier-core usr/bin/easytier-cli usr/bin/easytier-web \

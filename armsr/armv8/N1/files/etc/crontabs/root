@@ -1,3 +1,5 @@
 0 4 * * * fstrim -a
 # passwall2 每天 9:00 更新 /usr/share/v2ray geo 数据，9:30 重启 mosdns 重新 dump 共享的 txt 规则
 30 9 * * * /etc/init.d/mosdns restart
+# 每 6 小时用 ND 邻居表校正设备的 IPv6 链路本地记录（配合 AGH hostsfile 层设备命名）
+0 */6 * * * /usr/bin/refresh-ll.sh >/dev/null 2>&1
