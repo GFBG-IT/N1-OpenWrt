@@ -140,7 +140,7 @@ jobs:
           etc/apk/keys/nikki.pem \
           etc/apk/keys/openwrt-passwall-build.pem \
           etc/uci-defaults/99-custom-feeds \
-          etc/uci-defaults/99-adguardhome-paths \
+          usr/bin/aghrheal.sh etc/rc.d/S90-aghrheal \
           etc/uci-defaults/99-distfeeds-video \
           etc/uci-defaults/99-openssh-sshd-user \
           etc/uci-defaults/99-system-ntp \
@@ -149,7 +149,7 @@ jobs:
           etc/uci-defaults/99-firewall-include-cleanup \
           etc/uci-defaults/99-hold-core-packages \
           etc/uci-defaults/99-luci-lang \
-          etc/uci-defaults/99-mosdns-tuning \
+          etc/uci-defaults/99-dnsmasq-tuning \
           etc/uci-defaults/99-zram-size \
           etc/rc.d/S96-rps-4cpu \
           etc/crontabs/root \
@@ -160,18 +160,20 @@ jobs:
           usr/bin/restore-static-leases.sh usr/bin/refresh-ll.sh usr/bin/restore-dns-extras.sh \
           etc/agh-devices.conf.example etc/agh-ll-fallback.conf.example \
           etc/uci-defaults/99-mitigations-off \
-          usr/bin/mosdns usr/bin/openlist2 usr/bin/ddnstox \
-          usr/bin/easytier-core usr/bin/easytier-cli usr/bin/easytier-web \
-          etc/config/easytier etc/init.d/easytier \
+          usr/bin/openlist2 usr/bin/ddnstox \
           usr/bin/AdGuardHome etc/config/AdGuardHome etc/init.d/AdGuardHome \
           usr/bin/bandix etc/config/bandix etc/init.d/bandix \
           usr/libexec/rpcd/luci.bandix usr/share/luci/menu.d/luci-app-bandix.json \
           usr/bin/xray usr/bin/sing-box \
-          usr/bin/tcping usr/bin/geoview usr/bin/geo2txt \
+          usr/bin/tcping usr/bin/geoview \
+          usr/bin/oxidns etc/config/oxidns etc/init.d/oxidns etc/oxidns/config.yaml \
           usr/bin/wg etc/modules.d/wireguard \
+          usr/sbin/tailscale usr/sbin/tailscaled \
+          etc/config/tailscale etc/init.d/tailscale \
+          usr/share/luci/menu.d/luci-app-tailscale-community.json \
           usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
-          etc/config/mosdns etc/config/openlist2 etc/config/ddnstox \
+          etc/config/openlist2 etc/config/ddnstox \
           etc/init.d/passwall2 \
           usr/share/passwall2/0_default_config \
           etc/init.d/nikki \
@@ -190,7 +192,7 @@ jobs:
         agh_bin="$(grep -E '(^|/)usr/bin/AdGuardHome$' "$members" | head -n1)"
         if [ -n "$agh_bin" ]; then
           tar -xOzf "$rootfs" "$agh_bin" > /tmp/agh_bin 2>/dev/null
-          agh_got="$(strings /tmp/agh_bin 2>/dev/null | grep -oE 'v?0\.1[0-9]{2}\.[0-9]+' | head -n1)"
+          agh_got="$(strings /tmp/agh_bin 2>/dev/null | grep -oE 'v?(0\.1[0-9]{2}|1)\.[0-9]+\.[0-9]+' | head -n1)"
           agh_got="${agh_got#v}"
           rm -f /tmp/agh_bin
           if [ -n "$AGH_VERSION" ] && [ -n "$agh_got" ] && [ "$agh_got" != "$AGH_VERSION" ]; then

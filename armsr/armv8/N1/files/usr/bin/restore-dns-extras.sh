@@ -1,10 +1,10 @@
 #!/bin/sh
 # =====================================================================
-# AGH/mosdns/cron 配套调优恢复(固件内置 /usr/bin/, 重置恢复第 2 步):
+# AGH/cron 配套调优恢复(固件内置 /usr/bin/, 重置恢复第 2 步):
 # 前置 = AGH 完成向导接管 53 + 先跑 restore-static-leases.sh 重建租约(持久客户端依赖 host 节)
 # 恢复 = AGH(ratelimit=0 / timeout=5s / 反向解析开关+local_ptr / querylog 加量 /
 #        hostsfile_enabled / 上游 arpa 分行路由 / bootstrap 置空 / 按MAC持久客户端)
-#        + mosdns 流媒体分流 + cron(09:30 重启 mosdns、每 6h refresh-ll)
+#        + cron(每 6h refresh-ll)
 # 注意: 跑完之后不要在AGH界面再改"私人反向DNS解析器"和"客户端反向解析"开关
 # =====================================================================
 
@@ -104,10 +104,10 @@ ARPA
 			skip == 1 { skip = 0 }
 			{ print }
 		' "$ARPA" "$YAML" > "$YAML.tmp" && mv "$YAML.tmp" "$YAML"
-		echo ">> 上游已重写为 mosdns 分流 + 私网 arpa 分行路由 (原有上游列表被替换, 自定义上游请在 AGH 界面重加)"
+		echo ">> 上游已重写为 oxidns 分流 + 私网 arpa 分行路由 (原有上游列表被替换, 自定义上游请在 AGH 界面重加)"
 	fi
 
-	# bootstrap/fallback 置空: 主上游(mosdns)故障时干净失败, 不回退公网 DNS
+	# bootstrap/fallback 置空: 主上游(oxidns)故障时干净失败, 不回退公网 DNS
 	awk '
 		/^  (bootstrap_dns|fallback_dns):/ {
 			if ($0 ~ /\[\][ \t]*$/) { print; next }
@@ -185,33 +185,9 @@ else
 	echo "   请先完成 AGH 安装向导并接管 53 端口 (dnsmasq 退到 1745) 后再运行"
 fi
 
-# ---- mosdns ----
-if [ -f /etc/config/mosdns ]; then
-	OLD=$(uci -q get mosdns.config.custom_stream_media_dns)
-	uci set mosdns.config.custom_stream_media_dns='1'
-	uci commit mosdns
-	if [ "$OLD" != "1" ]; then
-		/etc/init.d/mosdns restart 2>/dev/null
-		echo ">> mosdns 流媒体分流已开启并重启"
-	else
-		echo ">> mosdns 流媒体分流已开启 (原本已启用)"
-	fi
-else
-	echo "!! mosdns 未安装, 该项跳过"
-fi
-
-# ---- cron: 09:30 mosdns 重启 ----
+# ---- cron: refresh-ll 自动校正 LL ----
 CRON=/etc/crontabs/root
 touch "$CRON"
-if grep -q "init.d/mosdns restart" "$CRON"; then
-	echo ">> cron 任务已存在 (每天09:30重启mosdns)"
-else
-	echo "30 9 * * * /etc/init.d/mosdns restart > /dev/null 2>&1" >> "$CRON"
-	/etc/init.d/cron restart
-	echo ">> cron 已添加: 每天09:30重启mosdns (同步passwall2共享的geo数据)"
-fi
-
-# ---- cron: refresh-ll 自动校正 LL ----
 if [ -x "$RLL" ]; then
 	if ! grep -q "refresh-ll.sh" "$CRON"; then
 		echo "0 */6 * * * $RLL >/dev/null 2>&1" >> "$CRON"
