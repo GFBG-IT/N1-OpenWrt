@@ -171,6 +171,8 @@ jobs:
           usr/sbin/tailscale usr/sbin/tailscaled \
           etc/config/tailscale etc/init.d/tailscale \
           usr/share/luci/menu.d/luci-app-tailscale-community.json \
+          usr/share/luci/menu.d/luci-app-ksmbd.json usr/share/luci/menu.d/luci-app-openlist2.json \
+          usr/share/luci/menu.d/luci-app-nikki.json \
           usr/libexec/mihomo \
           usr/share/v2ray/geoip.dat usr/share/v2ray/geosite.dat \
           etc/config/openlist2 etc/config/ddnstox \

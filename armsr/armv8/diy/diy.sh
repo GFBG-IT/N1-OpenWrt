@@ -818,9 +818,15 @@ fi
 openlist2_menu="package/openlist2/luci-app-openlist2/root/usr/share/luci/menu.d/luci-app-openlist2.json"
 if [ -f "$openlist2_menu" ]; then
     sed -i 's|admin/services/openlist2|admin/nas/openlist2|g' "$openlist2_menu"
+    if grep -q 'admin/nas/openlist2' "$openlist2_menu"; then
+        log "openlist2 菜单已移至 NAS 目录"
+    else
+        log "WARN: openlist2 菜单移动未生效，仍为 admin/services"
+    fi
+else
+    log "WARN: 未找到 luci-app-openlist2 menu.d，跳过菜单调整"
 fi
 
-# ksmbd 菜单移至 NAS 目录
 ksmbd_menu="feeds/luci/applications/luci-app-ksmbd/root/usr/share/luci/menu.d/luci-app-ksmbd.json"
 if [ -f "$ksmbd_menu" ]; then
     sed -i 's|admin/services/ksmbd|admin/nas/ksmbd|g' "$ksmbd_menu"
@@ -833,27 +839,18 @@ else
     log "WARN: 未找到 feeds luci-app-ksmbd，跳过菜单调整"
 fi
 
-# passwall2 / nikki / tailscale 的 LuCI 入口统一归位到 VPN 目录
-# 模式不能带 {" 前缀，alias(...) 会漏改导致子页面断链
-pw2_ctrl="package/passwall2/luci-app-passwall2/luasrc/controller/passwall2.lua"
-if [ -f "$pw2_ctrl" ] && grep -q '"admin", "services", appname' "$pw2_ctrl"; then
-    sed -i 's|"admin", "services", appname|"admin", "vpn", appname|g' "$pw2_ctrl"
-fi
-if [ -f "$pw2_ctrl" ] && grep -q '"admin", "vpn", appname' "$pw2_ctrl" \
-    && ! grep -q '"admin", "services"' "$pw2_ctrl"; then
-    log "passwall2 菜单已移至 VPN 目录"
+# passwall2 / nikki 上游默认即在 services 目录
+# tailscale 上游默认在 VPN 目录，归位到 network
+ts_menu="package/luci-app-tailscale-community/root/usr/share/luci/menu.d/luci-app-tailscale-community.json"
+if [ -f "$ts_menu" ]; then
+    sed -i 's|admin/vpn/tailscale|admin/network/tailscale|g' "$ts_menu"
+    if grep -q 'admin/network/tailscale' "$ts_menu"; then
+        log "tailscale 菜单已移至 network 目录"
+    else
+        log "WARN: tailscale 菜单归位未生效，仍为 admin/vpn"
+    fi
 else
-    log "WARN: passwall2 菜单归位未生效，仍为 admin/services"
-fi
-
-nikki_menu="package/luci-app-nikki/root/usr/share/luci/menu.d/luci-app-nikki.json"
-if [ -f "$nikki_menu" ]; then
-    sed -i 's|admin/services/nikki|admin/vpn/nikki|g' "$nikki_menu"
-fi
-if [ -f "$nikki_menu" ] && grep -q 'admin/vpn/nikki' "$nikki_menu"; then
-    log "nikki 菜单已移至 VPN 目录"
-else
-    log "WARN: nikki 菜单归位未生效，仍为 admin/services"
+    log "WARN: 未找到 luci-app-tailscale-community menu.d，跳过菜单调整"
 fi
 
 log "LuCI 菜单分类调整完成"
