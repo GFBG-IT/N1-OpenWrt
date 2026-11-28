@@ -1,3 +1,0 @@
-#!/bin/sh
-# 每次开机自愈 AGH（先于 S95AdGuardHome 执行，见 aghrheal.sh 头注释）
-[ -x /usr/bin/aghrheal.sh ] && /usr/bin/aghrheal.sh

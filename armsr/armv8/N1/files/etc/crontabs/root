@@ -1,3 +1,1 @@
 0 4 * * * fstrim -a
-# ND 邻居表校正设备 IPv6 链路本地记录（配合 AGH hostsfile 层设备命名）
-0 */6 * * * /usr/bin/refresh-ll.sh >/dev/null 2>&1

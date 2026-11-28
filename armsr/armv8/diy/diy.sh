@@ -376,7 +376,6 @@ clone_bg https://github.com/svenshi/luci-app-oxidns clone/oxidnsluci ""
 clone_bg https://github.com/sbwml/luci-app-openlist2 clone/openlist2 ""
 clone_bg https://github.com/linkease/ddnstox-openwrt-package clone/ddnstox ""
 clone_bg https://github.com/nikkinikki-org/OpenWrt-nikki clone/nikki ""
-clone_bg https://github.com/w9315273/luci-app-adguardhome clone/aghluci ""
 clone_bg https://github.com/GuNanOvO/openwrt-tailscale clone/tailscale ""
 clone_bg https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community clone/tailscaleluci ""
 clone_bg https://github.com/ophub/luci-app-amlogic clone/amlogic ""
@@ -415,11 +414,11 @@ rm -rf package/passwall_packages/chinadns-ng
 # chinadns-ng 非必需
 sed -i '/^[[:space:]]*select PACKAGE_chinadns-ng$/d' package/passwall2/luci-app-passwall2/Makefile
 
-# 固化每日 09:00 geo 更新，oxidns 内部 cron 9:30 跟随
+# 固化每日 06:30 geo 更新，oxidns 内部 cron 06:45 跟随
 P2_DEFAULT=package/passwall2/luci-app-passwall2/root/usr/share/passwall2/0_default_config
 if [ -f "$P2_DEFAULT" ] && grep -q '^config global_rules$' "$P2_DEFAULT"; then
     if ! grep -q 'update_week_mode' "$P2_DEFAULT"; then
-        sed -i "s|^\(\toption geosite_update '1'\)$|\1\n\toption update_week_mode '7'\n\toption update_time_mode '9:00'|" "$P2_DEFAULT"
+        sed -i "s|^\(\toption geosite_update '1'\)$|\1\n\toption update_week_mode '7'\n\toption update_time_mode '6:30'|" "$P2_DEFAULT"
     fi
     grep -q "option update_week_mode '7'" "$P2_DEFAULT" || { log "ERROR: passwall2 0_default_config 写入 geo 更新计划失败"; exit 1; }
 else
@@ -479,7 +478,8 @@ define Package/oxidns/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/oxidns $(1)/usr/bin/
 	$(CP) $(PKG_BUILD_DIR)/webui $(1)/usr/share/oxidns/webui
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/config.yaml $(1)/etc/oxidns/config.yaml
-	# 官方默认 webui 路径相对 working-dir 解析，webui 实际装在 /usr/share/oxidns/webui
+	# DNS 单层架构：oxidns 直接接管 :53；官方默认 webui 路径相对 working-dir 解析
+	$(SED) 's|listen: ":5335"|listen: ":53"|' $(1)/etc/oxidns/config.yaml
 	$(SED) 's|root: "./webui"|root: "/usr/share/oxidns/webui"|' $(1)/etc/oxidns/config.yaml
 endef
 
@@ -532,34 +532,6 @@ install_pkg clone/amlogic/luci-app-amlogic feeds/luci/applications/luci-app-amlo
 rm -rf feeds/luci/applications/luci-app-argon-config
 install_pkg clone/argon feeds/luci/themes/luci-theme-argon
 
-# luci-app-adguardhome-tk 路径对齐实机
-install_pkg clone/aghluci package/luci-app-adguardhome-tk
-agh_tk_uci="package/luci-app-adguardhome-tk/root/etc/config/AdGuardHome"
-sed -i "s|option binpath '/usr/bin/AdGuardHome/AdGuardHome'|option binpath '/usr/bin/AdGuardHome'|" "$agh_tk_uci"
-sed -i "s|option configpath '/etc/AdGuardHome.yaml'|option configpath '/etc/adguardhome/adguardhome.yaml'|" "$agh_tk_uci"
-sed -i "s|option workdir '/tmp/AdGuardHome'|option workdir '/etc/adguardhome'|" "$agh_tk_uci"
-if grep -q "option binpath '/usr/bin/AdGuardHome'$" "$agh_tk_uci" \
-    && grep -q "option configpath '/etc/adguardhome/adguardhome.yaml'" "$agh_tk_uci" \
-    && grep -q "option workdir '/etc/adguardhome'" "$agh_tk_uci"; then
-    log "adguardhome-tk 路径已对齐：核心 /usr/bin/AdGuardHome，配置与数据 /etc/adguardhome"
-else
-    log "ERROR: adguardhome-tk UCI 路径改造失败，请检查上游 config 文件格式"
-    exit 1
-fi
-# keep.d 只留配置，防旧二进制覆盖新核心
-agh_tk_init="package/luci-app-adguardhome-tk/root/etc/init.d/AdGuardHome"
-if [ -f "$agh_tk_init" ] && grep -qF '"$binpath" "$configpath"' "$agh_tk_init"; then
-    sed -i 's|"\$binpath" "\$configpath"|"\$configpath"|' "$agh_tk_init"
-fi
-# init 兜底默认值也是目录式布局
-sed -i 's|binpath "/usr/bin/AdGuardHome/AdGuardHome"|binpath "/usr/bin/AdGuardHome"|g' "$agh_tk_init"
-sed -i 's|workdir "/usr/bin/AdGuardHome"|workdir "/etc/adguardhome"|g' "$agh_tk_init"
-if grep -Eq 'binpath "/usr/bin/AdGuardHome/AdGuardHome"|workdir "/usr/bin/AdGuardHome"' "$agh_tk_init"; then
-    log "ERROR: adguardhome-tk init 兜底默认值对齐失败，仍存在目录式路径"
-    exit 1
-fi
-log "adguardhome-tk init 兜底默认值已对齐文件式布局"
-
 # bandix
 install_pkg clone/bandix/openwrt-bandix package/bandix
 install_pkg clone/bandixluci/luci-app-bandix package/luci-app-bandix
@@ -597,14 +569,12 @@ install_pkg clone/airconnect/luci-app-airconnect package/luci-app-airconnect
 install_pkg clone/ngtcp2 feeds/packages/libs/ngtcp2
 install_pkg clone/nghttp3 feeds/packages/libs/nghttp3
 
-# ophub remake 会用原版脚本覆盖 /usr/sbin，自愈由 S90-aghrheal 完成
-
-log "组件落盘完成（golang / passwall×2 / oxidns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / adguardhome-tk / bandix / vlmcsd / airconnect / ngtcp2+nghttp3）"
+log "组件落盘完成（golang / passwall×2 / oxidns / openlist2 / ddnstox / nikki / autocore / amlogic / argon / bandix / vlmcsd / airconnect / ngtcp2+nghttp3）"
 
 # ---- 4.3 统一确定外部组件版本 ----------------------------------------------
 log "确定外部组件版本 ..."
 
-# 并行 stage3：xray/mihomo/agh 失败中止编译，其余回退自带版本
+# 并行 stage3：xray/mihomo 失败中止编译，其余回退自带版本
 stage3_bg() {  # $1=组件名 $2=任务函数名：后台执行并登记 PID:名字
     "$2" &
     BG_PIDS+=("${!}:$1")
@@ -616,7 +586,7 @@ wait_stage3() {
         name="${item#*:}"
         if ! wait "$pid"; then
             case "$name" in
-                xray|mihomo|agh) log "ERROR: ${name} 组件版本更新失败，中止编译"; exit 1 ;;
+                xray|mihomo) log "ERROR: ${name} 组件版本更新失败，中止编译"; exit 1 ;;
                 *) log "WARN: ${name} 组件版本更新任务失败，保留仓库自带版本" ;;
             esac
         fi
@@ -683,43 +653,6 @@ stage3_oxidns() {
     log "oxidns -> ${ox_tag}"
 }
 stage3_bg oxidns stage3_oxidns
-
-# AdGuardHome：最新正式 tag，重试 3 次；耗尽后回退 feed 自带版本，不阻断编译
-stage3_agh() {
-    local agh_makefile="feeds/packages/net/adguardhome/Makefile"
-    local agh_ok="" i agh_tag agh_ver agh_hash agh_front_hash
-    [ -f "$agh_makefile" ] || { log "ERROR: 找不到 feeds adguardhome 包"; return 1; }
-    for i in 1 2 3; do
-        agh_tag="$(github_latest_tag https://github.com/AdguardTeam/AdGuardHome.git 'v*' '^v[0-9]+(\.[0-9]+)+$' || true)"
-        [ -n "$agh_tag" ] || { log "WARN: 第 ${i}/3 次获取 AdGuardHome 版本失败"; sleep 3; continue; }
-        agh_ver="${agh_tag#v}"
-        agh_hash="$(fetch_sha256 "https://codeload.github.com/AdguardTeam/AdGuardHome/tar.gz/v${agh_ver}?" || true)"
-        [ -n "$agh_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 源码校验失败"; sleep 3; continue; }
-        agh_front_hash="$(fetch_sha256 "https://github.com/AdguardTeam/AdGuardHome/releases/download/v${agh_ver}/AdGuardHome_frontend.tar.gz" || true)"
-        [ -n "$agh_front_hash" ] || { log "WARN: 第 ${i}/3 次下载 AdGuardHome 前端校验失败"; sleep 3; continue; }
-        agh_ok=1
-        break
-    done
-    if [ -n "$agh_ok" ]; then
-        sed -i "s|^PKG_VERSION:=.*$|PKG_VERSION:=${agh_ver}|" "$agh_makefile"
-        sed -i "s|^PKG_HASH:=.*$|PKG_HASH:=${agh_hash}|" "$agh_makefile"
-        sed -i "s|^FRONTEND_HASH:=.*$|FRONTEND_HASH:=${agh_front_hash}|" "$agh_makefile"
-        log "adguardhome -> ${agh_ver}"
-        if [ -n "${GITHUB_ENV:-}" ]; then
-            echo "AGH_VERSION=${agh_ver}" >> "$GITHUB_ENV"
-        fi
-    else
-        log "WARN: AdGuardHome 重试 3 次均失败，回退 feed 自带版本编译"
-    fi
-    # feeds 包只留编译产物，服务由 tk 接管避免双 init；与版本写入同文件须串行执行
-    sed -i '\|./files/adguardhome.conf|d; \|./files/adguardhome.init|d; \|./files/adguardhome.defaults|d' "$agh_makefile"
-    if grep -q "adguardhome.init" "$agh_makefile"; then
-        log "WARN: feeds adguardhome init 清理未生效，固件可能存在双 init 脚本"
-    else
-        log "feeds adguardhome 已精简为纯二进制包（服务由 luci-app-adguardhome-tk 接管）"
-    fi
-}
-stage3_bg agh stage3_agh
 
 stage3_geodata() {
     local geoip_tag geosite_tag geoip_hash geosite_hash
@@ -954,7 +887,7 @@ chmod 755 files/etc/uci-defaults/99-firewall-include-cleanup
 
 cat > files/etc/uci-defaults/99-dnsmasq-tuning <<'EOF'
 #!/bin/sh
-# dnsmasq 结构参数：监听端口让给 AdGuardHome，缓存交给上游 AdGuardHome/oxidns
+# dnsmasq 结构参数：监听端口让给 oxidns（:53），本地名称层退居 1745
 if [ -f /etc/config/dhcp ] && uci -q get dhcp.@dnsmasq[0] >/dev/null 2>&1; then
 	uci -q set dhcp.@dnsmasq[0].port='1745'
 	uci -q set dhcp.@dnsmasq[0].cachesize='0'
